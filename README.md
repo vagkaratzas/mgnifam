@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">
+    <img src="assets/logo.png" width="600" alt="mgnifam">
+  </picture>
+</p>
+
 # mgnifam
 
 Iterative HMM-based protein family generation over very large sequence databases.
