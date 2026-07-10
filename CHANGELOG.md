@@ -5,11 +5,13 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+*Disclaimer*
+
 Byte-level reproducibility is only claimed for the dependency set resolved in the
 committed `uv.lock`. pyhmmer, pyfamsa and pytrimal determine hit retention, alignment
 and serialised bytes, so a change in any of them may change outputs.
 
-## [1.0.0] - 2026-07-10
+## [1.0.0] - unreleased
 
 First release of `mgnifam` as a standalone package. The algorithm is a port of
 `generate_families.py` from the [mgnifams](https://github.com/vagkaratzas/mgnifams)
