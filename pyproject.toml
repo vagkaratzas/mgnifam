@@ -1,11 +1,33 @@
 [project]
 name = "mgnifam"
-version = "0.1.0"
+version = "1.0.0"
 description = "Iterative HMM-based protein family generation over very large sequence databases"
 readme = "README.md"
 license = { file = "LICENSE" }
-authors = [{ name = "Vangelis Karatzas", email = "vagkaratzas1990@gmail.com" }]
+authors = [{ name = "Evangelos Karatzas", email = "vagkaratzas1990@gmail.com" }]
+maintainers = [{ name = "Evangelos Karatzas", email = "vagkaratzas1990@gmail.com" }]
 requires-python = ">=3.12"
+keywords = [
+    "bioinformatics",
+    "protein-families",
+    "hmm",
+    "hmmer",
+    "msa",
+    "metagenomics",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Typing :: Typed",
+]
 # Upper bounds are deliberate: pyhmmer/pyfamsa/pytrimal decide hit retention,
 # alignment and serialised bytes, so the byte-reproducibility contract in the
 # README only holds for the resolved set recorded in uv.lock.
@@ -17,10 +39,13 @@ dependencies = [
 ]
 
 [project.scripts]
-generate-families = "mgnifam.generate_families:main"
+mgnifam = "mgnifam.cli:main"
 
 [project.urls]
+Homepage = "https://github.com/vagkaratzas/mgnifam"
 Repository = "https://github.com/vagkaratzas/mgnifam"
+Changelog = "https://github.com/vagkaratzas/mgnifam/blob/main/CHANGELOG.md"
+Issues = "https://github.com/vagkaratzas/mgnifam/issues"
 
 [build-system]
 requires = ["hatchling"]
@@ -28,6 +53,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mgnifam"]
+
+[tool.hatch.build.targets.sdist]
+# The 12 MB of gzipped FASTA fixtures and the review transcript are needed to develop
+# the project, not to install it. Keep them out of the published sdist.
+exclude = ["/tests", "/reference", "/PLAN.md", "/PLAN-REVIEW-LOG.md", "/.github"]
 
 [dependency-groups]
 dev = ["pre-commit>=4.4.0", "pytest>=9.0.0"]
