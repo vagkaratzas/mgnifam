@@ -1,0 +1,865 @@
+#!/usr/bin/env python3
+
+import argparse
+import contextlib
+import gzip
+import io
+import itertools
+import logging
+import os
+import re
+import shutil
+import tempfile
+import threading
+import time
+from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Sequence as SequenceCollection
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from pathlib import Path
+from typing import IO, Any, NamedTuple, cast
+
+import numpy as np
+import pyfamsa
+import pyhmmer
+import pytrimal
+
+ALPHABET = pyhmmer.easel.Alphabet.amino()
+CHUNK_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
+OUTPUT_DIRECTORIES = (
+    "logs",
+    "refined_families",
+    "discarded_clusters",
+    "successful_clusters",
+    "converged_families",
+    "family_metadata",
+    "family_reps",
+    "seed_msa_sto",
+    "full_msa_sto",
+    "hmm",
+    "rf",
+)
+
+
+class DuplicateSequenceName(ValueError):
+    """Raised when an SSI index cannot be built because FASTA names repeat."""
+
+
+class IndexMismatchError(RuntimeError):
+    """Raised when an SSI index returns a record under the wrong key."""
+
+
+class Sequence(NamedTuple):
+    id: str
+    seq: str
+
+
+Record = tuple[str, int, int, int]
+
+
+class SizedIterator:
+    def __init__(self, iterator: Iterable[str], length: int) -> None:
+        self.iterator = iter(iterator)
+        self.length = length
+
+    def __len__(self) -> int:
+        return self.length
+
+    def __iter__(self) -> "SizedIterator":
+        return self
+
+    def __next__(self) -> str:
+        item = next(self.iterator)
+        self.length -= 1
+        return item
+
+
+def pyfamsa_to_pyhmmer(alignment: pyfamsa.Alignment) -> pyhmmer.easel.DigitalMSA:
+    return pyhmmer.easel.TextMSA(
+        sequences=[
+            pyhmmer.easel.TextSequence(name=seq.id.decode(), sequence=seq.sequence.decode())
+            for seq in alignment
+        ]
+    ).digitize(ALPHABET)
+
+
+def pytrimal_to_pyhmmer(alignment: pytrimal.Alignment) -> pyhmmer.easel.TextMSA:
+    return pyhmmer.easel.TextMSA(
+        sequences=[
+            pyhmmer.easel.TextSequence(
+                name=name.decode() if isinstance(name, bytes) else name,
+                sequence=sequence,
+            )
+            for name, sequence in zip(alignment.names, alignment.sequences, strict=True)
+        ]
+    )
+
+
+def build_ssi_index(fasta: str | os.PathLike[str], ssi_path: str | os.PathLike[str]) -> None:
+    """Build an Easel SSI index atomically beside its destination."""
+    fasta_path = Path(fasta)
+    destination = Path(ssi_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_directory = Path(tempfile.mkdtemp(dir=destination.parent))
+    temporary_index = temporary_directory / "index.ssi"
+
+    try:
+        writer = pyhmmer.easel.SSIWriter(temporary_index)
+        file_number = writer.add_file(fasta_path.name, pyhmmer.easel.SequenceFile._FORMATS["fasta"])
+        with fasta_path.open("rb") as fasta_handle:
+            while True:
+                record_offset = fasta_handle.tell()
+                line = fasta_handle.readline()
+                if not line:
+                    break
+                if line.startswith(b">"):
+                    name = line[1:].split(maxsplit=1)[0].decode()
+                    writer.add_key(name, file_number, record_offset)
+        try:
+            writer.close()
+        except ValueError as error:
+            if "duplicate" in str(error).lower():
+                raise DuplicateSequenceName(
+                    "FASTA sequence names must be unique to build an SSI index"
+                ) from error
+            raise
+        os.replace(temporary_index, destination)
+    finally:
+        shutil.rmtree(temporary_directory, ignore_errors=True)
+
+
+def fetch_indexed_sequence(
+    indexed: Mapping[str, pyhmmer.easel.TextSequence], name: str
+) -> pyhmmer.easel.TextSequence:
+    fetched = indexed[name]
+    if fetched.name != name:
+        raise IndexMismatchError(
+            f"SSI index mismatch: requested {name!r}, fetched {fetched.name!r}"
+        )
+    return fetched
+
+
+class IndexedSequences:
+    def __init__(self, sequence_file: pyhmmer.easel.SequenceFile) -> None:
+        self.indexed = sequence_file.indexed
+
+    def get(self, name: str, *, missing_ok: bool = False) -> Sequence | None:
+        try:
+            fetched = fetch_indexed_sequence(self.indexed, name)
+        except KeyError:
+            if missing_ok:
+                return None
+            raise
+        return Sequence(name, fetched.sequence)
+
+
+def run_initial_msa(
+    members: Iterable[str], indexed_sequences: IndexedSequences, cpus: int
+) -> pyhmmer.easel.DigitalMSA | None:
+    sequences = []
+    for member in members:
+        sequence = indexed_sequences.get(member, missing_ok=True)
+        if sequence is not None:
+            sequences.append(pyfamsa.Sequence(id=member.encode(), sequence=sequence.seq.encode()))
+    if not sequences:
+        return None
+    alignment = pyfamsa.Aligner(threads=cpus).align(sequences)
+    return pyfamsa_to_pyhmmer(alignment)
+
+
+def run_hmmbuild(
+    seed_msa: pyhmmer.easel.DigitalMSA, name: str, *, hand: bool = False
+) -> pyhmmer.plan7.HMM:
+    seed_msa.name = name
+    architecture = "hand" if hand else "fast"
+    builder = pyhmmer.plan7.Builder(ALPHABET, architecture=architecture, seed=42)
+    background = pyhmmer.plan7.Background(ALPHABET)
+    hmm, _, _ = builder.build_msa(seed_msa, background)
+    return hmm
+
+
+@contextlib.contextmanager
+def search(
+    hmms: SequenceCollection[pyhmmer.plan7.HMM],
+    targets: Any,
+    *,
+    cpus: int,
+    evalue: float,
+    logger: logging.Logger,
+    batch_number: int,
+    round_number: int,
+) -> Iterator[Iterator[Any]]:
+    completed = 0
+    lock = threading.Lock()
+    stop_event = threading.Event()
+    started = time.monotonic()
+
+    def callback(_query: pyhmmer.plan7.HMM, _index: int) -> None:
+        nonlocal completed
+        with lock:
+            completed += 1
+
+    def heartbeat() -> None:
+        while not stop_event.wait(60):
+            with lock:
+                current = completed
+            logger.info(
+                "heartbeat batch=%d round=%d families=%d completed=%d/%d elapsed=%.1fs",
+                batch_number,
+                round_number,
+                len(hmms),
+                current,
+                len(hmms),
+                time.monotonic() - started,
+            )
+
+    timer = threading.Thread(target=heartbeat, daemon=True)
+    timer.start()
+    try:
+        iterator = pyhmmer.hmmer.hmmsearch(
+            hmms,
+            targets,
+            cpus=cpus,
+            callback=callback,
+            parallel="queries",
+            E=evalue,
+            seed=42,
+        )
+        with contextlib.closing(iterator) as searched:
+            yield searched
+    finally:
+        stop_event.set()
+        timer.join()
+
+
+def extract_records(top_hits: Any) -> list[Record]:
+    return [
+        (hit.name, hit.length, domain.env_from, domain.env_to)
+        for hit in top_hits
+        for domain in hit.domains
+    ]
+
+
+def mask_sequence(sequence: Sequence, env_from: int, env_to: int) -> Sequence:
+    return Sequence(f"{sequence.id}/{env_from}_{env_to}", sequence.seq[env_from - 1 : env_to])
+
+
+def filter_hits(
+    records: Iterable[Record],
+    qlen: int,
+    exit_flag: bool,
+    recruit_hit_length_percentage: float,
+    indexed_sequences: IndexedSequences,
+) -> list[Sequence]:
+    filtered_sequences = []
+    for name, target_length, env_from, env_to in records:
+        envelope_length = env_to - env_from + 1
+        if exit_flag or envelope_length >= recruit_hit_length_percentage * qlen:
+            sequence = cast(Sequence, indexed_sequences.get(name))
+            if envelope_length < target_length:
+                sequence = mask_sequence(sequence, env_from, env_to)
+            filtered_sequences.append(sequence)
+    return filtered_sequences
+
+
+def run_hmmalign(
+    hmm: pyhmmer.plan7.HMM, family_sequences: Iterable[Sequence], cpus: int
+) -> pyhmmer.easel.TextMSA:
+    sequences = pyhmmer.easel.TextSequenceBlock(
+        pyhmmer.easel.TextSequence(name=sequence.id, sequence=sequence.seq)
+        for sequence in family_sequences
+    ).digitize(ALPHABET)
+    return cast(
+        pyhmmer.easel.TextMSA,
+        pyhmmer.hmmer.hmmalign(hmm, sequences, cpus=cpus, trim=False),
+    )
+
+
+def msa_stats(msa: pyhmmer.easel.TextMSA) -> tuple[int, int]:
+    number_of_sequences = len(msa.names)
+    non_gap_representative_length = (
+        len(re.sub(r"[.\-~]", "", msa.alignment[0])) if number_of_sequences else 0
+    )
+    return number_of_sequences, non_gap_representative_length
+
+
+def clip_env_ends(msa: pyhmmer.easel.TextMSA) -> pyhmmer.easel.TextMSA:
+    if msa.reference is None:
+        raise ValueError("hmmalign result has no RF reference annotation")
+    matching_columns = [index for index, value in enumerate(msa.reference) if value != "."]
+    if not matching_columns:
+        return msa
+    return msa.select(columns=range(matching_columns[0], matching_columns[-1] + 1))
+
+
+def run_pytrimal_reps(
+    full_msa: pyhmmer.easel.TextMSA, threshold: float, max_seed_seqs: int
+) -> pyhmmer.easel.TextMSA:
+    if full_msa.reference is None:
+        raise ValueError("alignment has no RF reference annotation")
+    reference = np.array(list(full_msa.reference))
+    sequences = SizedIterator(
+        (sequence.upper().replace(".", "-").replace("~", "-") for sequence in full_msa.alignment),
+        len(full_msa.alignment),
+    )
+    alignment = pytrimal.Alignment([name.encode() for name in full_msa.names], sequences)
+    alignment = pytrimal.RepresentativeTrimmer(identity_threshold=threshold).trim(alignment)
+    reference = reference[alignment.residues_mask]
+
+    if len(list(alignment.names)) > max_seed_seqs:
+        alignment = pytrimal.RepresentativeTrimmer(clusters=max_seed_seqs).trim(alignment)
+        reference = reference[alignment.residues_mask]
+
+    result = pytrimal_to_pyhmmer(alignment)
+    result.reference = "".join(reference)
+    return result
+
+
+def calculate_trim_positions(
+    sequence_matrix: np.ndarray, occupancy_threshold: float
+) -> tuple[int, int]:
+    numeric_matrix = np.where(sequence_matrix == "-", 0, 1)
+    column_percentages = np.sum(numeric_matrix, axis=0) / numeric_matrix.shape[0]
+    start_position = int(np.argmax(column_percentages > occupancy_threshold))
+    end_position = int(
+        len(column_percentages) - np.argmax(column_percentages[::-1] > occupancy_threshold) - 1
+    )
+    return start_position, end_position
+
+
+def clip_ends(msa: pyhmmer.easel.TextMSA, occupancy_threshold: float) -> pyhmmer.easel.TextMSA:
+    sequence_matrix = np.array([list(row) for row in msa.alignment])
+    start_position, end_position = calculate_trim_positions(sequence_matrix, occupancy_threshold)
+    # Preserved legacy off-by-one: the final passing column is intentionally omitted.
+    return msa.select(columns=range(start_position, end_position))
+
+
+def extract_first_part(sequence_name: str) -> str:
+    return sequence_name.split("/")[0]
+
+
+def unmask_sequence_names(sequences: Iterable[Sequence]) -> list[str]:
+    return [extract_first_part(name) for name, _ in sequences]
+
+
+def check_seed_membership(
+    original_sequence_names: Iterable[str], filtered_sequence_names: Iterable[str]
+) -> float:
+    originals = list(original_sequence_names)
+    original_first_parts = set(map(extract_first_part, originals))
+    filtered_first_parts = set(map(extract_first_part, filtered_sequence_names))
+    return len(original_first_parts & filtered_first_parts) / len(originals)
+
+
+def parse_protein_name(
+    seq_name: str,
+    seq_length: int,
+    seq_whole_name: str,
+    original_length: int,
+    start: int,
+    end: int,
+) -> str:
+    splits = seq_name.split("_")
+    if (end - start) == original_length:
+        if len(splits) == 3:
+            seq_name = f"{splits[0]}/{splits[1]}-{splits[2]}"
+        return seq_name
+
+    old_length = len(seq_whole_name)
+    if len(splits) == 3:
+        new_start = start + int(splits[1])
+        new_end = new_start + seq_length - 1
+        new_name = f"{splits[0]}/{new_start}-{new_end}"
+    else:
+        new_name = f"{splits[0]}/{start + 1}-{end}"
+    if len(new_name) < old_length:
+        new_name = new_name.ljust(old_length)
+    elif len(new_name) > old_length:
+        new_name = new_name.rstrip()
+        if len(new_name) > old_length:
+            new_name = new_name[:old_length]
+        else:
+            new_name = new_name.ljust(old_length)
+    return new_name
+
+
+def renumber_sto_msa(
+    in_sto_file: str | os.PathLike[str],
+    output: IO[str],
+    indexed_sequences: IndexedSequences,
+    *,
+    family_file: IO[str] | None = None,
+    metadata_file: IO[str] | None = None,
+    representatives_file: IO[str] | None = None,
+    iteration: int | None = None,
+    chunk_num: str | None = None,
+    full_msa_num_seqs: int | None = None,
+    consensus: str | None = None,
+    converged: bool | None = None,
+) -> None:
+    write_metadata = family_file is not None
+    if write_metadata and (
+        metadata_file is None
+        or representatives_file is None
+        or iteration is None
+        or chunk_num is None
+    ):
+        raise ValueError("metadata output requires all metadata handles and identifiers")
+
+    representative = True
+    seen_sequence_names: set[str] = set()
+    with Path(in_sto_file).open(encoding="utf-8") as infile:
+        for line in infile:
+            split_line = line.split()
+            if not split_line:
+                continue
+            if split_line[0] == "//" or split_line[1] == "RF":
+                output.write(line)
+            elif split_line[1] == "STOCKHOLM":
+                output.write(f"{line}\n")
+            # Legacy drops every #=GF/#=GS/#=GR line, including the "#=GF ID" that
+            # naming the seed MSA emits. The family name survives as the HMM's NAME.
+            elif split_line[0] not in ["#=GF", "#=GS", "#=GC", "#=GR"]:
+                raw_sequence_name = split_line[0].split("/")[0]
+                sequence = re.sub(r"[.\-~]", "", split_line[1]).upper()
+                original = cast(Sequence, indexed_sequences.get(raw_sequence_name)).seq
+                start = original.find(sequence)
+                end = start + len(sequence)
+                sequence_name = parse_protein_name(
+                    raw_sequence_name,
+                    len(sequence),
+                    split_line[0],
+                    len(original),
+                    start,
+                    end,
+                )
+                if sequence_name.strip() in seen_sequence_names:
+                    continue
+                seen_sequence_names.add(sequence_name.strip())
+                output.write(line.replace(split_line[0], sequence_name, 1))
+
+                if write_metadata:
+                    cast(IO[str], family_file).write(f"{iteration}\t{sequence_name}\n")
+                    if representative:
+                        splits = sequence_name.split("/")
+                        region = splits[1].strip() if "/" in sequence_name else "-"
+                        cast(IO[str], metadata_file).write(
+                            f'{iteration},{full_msa_num_seqs},"{splits[0]}",{region},'
+                            f"{len(sequence)},{sequence},{consensus},{converged}\n"
+                        )
+                        cast(IO[str], representatives_file).write(
+                            f">{sequence_name.strip()}\t{chunk_num}_{iteration}\n{sequence}\n"
+                        )
+                        representative = False
+
+
+class FamilyState(Enum):
+    RUNNING = auto()
+    CONVERGED = auto()
+    DISCARDED = auto()
+    SUCCESSFUL = auto()
+
+
+@dataclass
+class Family:
+    representative: str
+    members: list[str]
+    state: FamilyState = FamilyState.RUNNING
+    seed_msa: pyhmmer.easel.DigitalMSA | None = None
+    hmm: pyhmmer.plan7.HMM | None = None
+    records: list[Record] = field(default_factory=list)
+    qlen: int = 0
+    total_checked_sequences: set[str] = field(default_factory=set)
+    full_msa: pyhmmer.easel.TextMSA | None = None
+    full_msa_num_seqs: int = 0
+    discard_reason: str = ""
+    discard_value: int | float = 0.0
+    ever_converged: bool = False
+    family_id: int | None = None
+
+    def discard(self, reason: str, value: int | float) -> None:
+        self.state = FamilyState.DISCARDED
+        self.discard_reason = reason
+        self.discard_value = value
+
+    def initialise(self, indexed_sequences: IndexedSequences, cpus: int) -> None:
+        self.seed_msa = run_initial_msa(self.members, indexed_sequences, cpus)
+        sequence_count = len(self.seed_msa.names) if self.seed_msa is not None else 0
+        if sequence_count < 2:
+            self.discard("too few sequences before initial hmmbuild", sequence_count)
+
+    def advance(self, options: argparse.Namespace, indexed_sequences: IndexedSequences) -> None:
+        filtered_sequences = filter_hits(
+            self.records,
+            self.qlen,
+            False,
+            options.recruit_hit_length_percentage,
+            indexed_sequences,
+        )
+        if not filtered_sequences:
+            self.discard("low complexity model - confounding cluster", 0.0)
+            return
+
+        recruited_names = set(unmask_sequence_names(filtered_sequences))
+        new_recruited_sequences = recruited_names - self.total_checked_sequences
+        self.total_checked_sequences.update(new_recruited_sequences)
+        if not new_recruited_sequences:
+            self.state = FamilyState.CONVERGED
+            self.ever_converged = True
+            return
+
+        aligned = clip_env_ends(
+            run_hmmalign(cast(pyhmmer.plan7.HMM, self.hmm), filtered_sequences, options.cpus)
+        )
+        _, representative_length = msa_stats(aligned)
+        reason = check_rep_length(representative_length, options)
+        if reason is not None:
+            self.discard(*reason)
+            return
+
+        trimmed = run_pytrimal_reps(aligned, options.max_seq_identity, options.max_seed_seqs)
+        sequence_count = len(trimmed.names)
+        if sequence_count <= 2:
+            self.discard("too few sequences after redundancy filtering", sequence_count)
+            return
+        trimmed = clip_ends(trimmed, options.max_gap_occupancy)
+        self.seed_msa = trimmed.digitize(ALPHABET)
+
+    def finish(self, options: argparse.Namespace, indexed_sequences: IndexedSequences) -> None:
+        if self.state not in (FamilyState.RUNNING, FamilyState.CONVERGED):
+            return
+        sequence_count = len(self.seed_msa.names) if self.seed_msa is not None else 0
+        if sequence_count < 2:
+            self.discard("too few sequences before hand hmmbuild", sequence_count)
+            return
+
+        filtered_sequences = filter_hits(
+            self.records,
+            self.qlen,
+            True,
+            options.recruit_hit_length_percentage,
+            indexed_sequences,
+        )
+        if not filtered_sequences:
+            self.discard("low complexity model - confounding cluster", 0.0)
+            return
+
+        membership = check_seed_membership(self.members, unmask_sequence_names(filtered_sequences))
+        if membership < options.discard_min_starting_membership:
+            self.discard("few seed sequences remained", membership)
+            return
+
+        self.full_msa = run_hmmalign(
+            cast(pyhmmer.plan7.HMM, self.hmm), filtered_sequences, options.cpus
+        )
+        self.full_msa_num_seqs, representative_length = msa_stats(self.full_msa)
+        reason = check_rep_length(representative_length, options)
+        if reason is not None:
+            self.discard(*reason)
+            return
+        self.state = FamilyState.SUCCESSFUL
+
+
+def check_rep_length(
+    representative_length: int, options: argparse.Namespace
+) -> tuple[str, int] | None:
+    if representative_length < options.discard_min_rep_length:
+        return "family representative length too small", representative_length
+    if representative_length > options.discard_max_rep_length:
+        return "family representative length too large", representative_length
+    return None
+
+
+@dataclass
+class Writers:
+    root: Path
+    indexed: IndexedSequences
+    refined_families: IO[str]
+    discarded_clusters: IO[str]
+    successful_clusters: IO[str]
+    converged_families: IO[str]
+    family_metadata: IO[str]
+    family_representatives: IO[str]
+
+
+@contextlib.contextmanager
+def deterministic_gzip_text(path: Path) -> Iterator[IO[str]]:
+    with (
+        path.open("wb") as raw,
+        gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0) as compressed,
+        io.TextIOWrapper(compressed, encoding="utf-8", newline="") as text,
+    ):
+        yield text
+
+
+@contextlib.contextmanager
+def deterministic_gzip_binary(path: Path) -> Iterator[IO[bytes]]:
+    with (
+        path.open("wb") as raw,
+        gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0) as compressed,
+    ):
+        yield compressed
+
+
+def emit_family(
+    family: Family,
+    success_count: int,
+    chunk: str,
+    writers: Writers,
+    temporary_directory: Path,
+) -> int:
+    provisional_id = success_count + 1
+    if family.ever_converged:
+        writers.converged_families.write(f"{provisional_id}\n")
+    if family.state is FamilyState.DISCARDED:
+        writers.discarded_clusters.write(
+            f"{family.representative},{family.discard_reason},{family.discard_value}\n"
+        )
+        return success_count
+
+    family.family_id = provisional_id
+    family_name = f"{chunk}_{provisional_id}"
+    seed_msa = cast(pyhmmer.easel.DigitalMSA, family.seed_msa)
+    full_msa = cast(pyhmmer.easel.TextMSA, family.full_msa)
+    final_hmm = run_hmmbuild(seed_msa, family_name, hand=True)
+    final_hmm.name = family_name
+    final_hmm.creation_time = None
+    final_hmm.command_line = None
+
+    writers.successful_clusters.write(f"{family.representative}\n")
+    if seed_msa.reference is None:
+        raise ValueError("successful seed MSA has no RF reference annotation")
+    (writers.root / "rf" / f"{family_name}.txt").write_text(seed_msa.reference, encoding="utf-8")
+    with deterministic_gzip_binary(writers.root / "hmm" / f"{family_name}.hmm.gz") as handle:
+        final_hmm.write(handle)
+
+    seed_temporary = temporary_directory / "seed_msa.sto"
+    full_temporary = temporary_directory / "full_msa.sto"
+    with seed_temporary.open("wb") as handle:
+        seed_msa.write(handle, format="pfam")
+    with full_temporary.open("wb") as handle:
+        full_msa.write(handle, format="pfam")
+
+    with deterministic_gzip_text(writers.root / "seed_msa_sto" / f"{family_name}.sto.gz") as output:
+        renumber_sto_msa(seed_temporary, output, cast(IndexedSequences, writers.indexed))
+    with deterministic_gzip_text(writers.root / "full_msa_sto" / f"{family_name}.sto.gz") as output:
+        renumber_sto_msa(
+            full_temporary,
+            output,
+            cast(IndexedSequences, writers.indexed),
+            family_file=writers.refined_families,
+            metadata_file=writers.family_metadata,
+            representatives_file=writers.family_representatives,
+            iteration=provisional_id,
+            chunk_num=chunk,
+            full_msa_num_seqs=family.full_msa_num_seqs,
+            consensus=final_hmm.consensus,
+            converged=family.ever_converged,
+        )
+    return provisional_id
+
+
+def load_clusters(path: str | os.PathLike[str]) -> dict[str, list[str]]:
+    clusters: dict[str, list[str]] = {}
+    with Path(path).open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, 1):
+            fields = line.rstrip("\r\n").split("\t")
+            if len(fields) != 2 or not all(fields):
+                raise ValueError(
+                    f"cluster TSV row {line_number} must contain exactly two non-empty fields"
+                )
+            representative, member = fields
+            clusters.setdefault(representative, []).append(member)
+    return clusters
+
+
+def parse_args(args: SequenceCollection[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Process clustering data and extract sequences.")
+    parser.add_argument("-c", "--clusters_chunk", required=True)
+    parser.add_argument("-f", "--fasta_file", required=True)
+    parser.add_argument("-p", "--cpus", required=True, type=int)
+    parser.add_argument("-n", "--chunk_num", required=True)
+    parser.add_argument("--discard_min_rep_length", required=True, type=int)
+    parser.add_argument("--discard_max_rep_length", required=True, type=int)
+    parser.add_argument("--discard_min_starting_membership", required=True, type=float)
+    parser.add_argument("--max_seq_identity", required=True, type=float)
+    parser.add_argument("--max_seed_seqs", required=True, type=int)
+    parser.add_argument("--max_gap_occupancy", required=True, type=float)
+    parser.add_argument("--recruit_evalue_cutoff", required=True, type=float)
+    parser.add_argument("--recruit_hit_length_percentage", required=True, type=float)
+    parser.add_argument("--fasta_index")
+    parser.add_argument("--batch_size", type=int, default=0)
+    parser.add_argument("--prefetch_targets", action="store_true")
+    return parser.parse_args(args)
+
+
+def is_gzipped(path: Path) -> bool:
+    with path.open("rb") as handle:
+        return handle.read(2) == b"\x1f\x8b"
+
+
+def validate_inputs(options: argparse.Namespace) -> dict[str, list[str]]:
+    if CHUNK_PATTERN.fullmatch(options.chunk_num) is None:
+        raise ValueError("chunk_num must match [A-Za-z0-9._-]+")
+    fasta = Path(options.fasta_file)
+    if not fasta.is_file():
+        raise ValueError("fasta_file must be an existing file")
+    if is_gzipped(fasta):
+        raise ValueError("fasta_file must be uncompressed; SSI cannot seek in gzip streams")
+    if not Path(options.clusters_chunk).is_file():
+        raise ValueError("clusters_chunk must be an existing file")
+    if options.cpus < 1:
+        raise ValueError("cpus must be at least 1")
+    if options.batch_size < 0:
+        raise ValueError("batch_size must be non-negative (0 selects 2 * cpus)")
+    if options.batch_size and options.batch_size < options.cpus:
+        raise ValueError("batch_size must be at least cpus")
+    for name in (
+        "discard_min_starting_membership",
+        "max_seq_identity",
+        "max_gap_occupancy",
+        "recruit_hit_length_percentage",
+    ):
+        if not 0 <= getattr(options, name) <= 1:
+            raise ValueError(f"{name} must be in [0, 1]")
+    if options.recruit_evalue_cutoff <= 0:
+        raise ValueError("recruit_evalue_cutoff must be positive")
+    if options.max_seed_seqs < 1:
+        raise ValueError("max_seed_seqs must be at least 1")
+    if options.discard_min_rep_length < 1 or options.discard_max_rep_length < 1:
+        raise ValueError("representative length bounds must be at least 1")
+    if options.discard_min_rep_length > options.discard_max_rep_length:
+        raise ValueError("minimum representative length cannot exceed maximum")
+    return load_clusters(options.clusters_chunk)
+
+
+def prepare_output_directories(root: Path, chunk: str) -> None:
+    for directory in OUTPUT_DIRECTORIES:
+        (root / directory).mkdir(parents=True, exist_ok=True)
+    artifact_pattern = re.compile(rf"{re.escape(chunk)}_\d+\..*")
+    for directory in ("seed_msa_sto", "full_msa_sto", "hmm", "rf"):
+        for path in (root / directory).iterdir():
+            if path.is_file() and artifact_pattern.fullmatch(path.name):
+                path.unlink()
+
+
+def configure_logger(path: Path) -> logging.Logger:
+    logger = logging.getLogger(f"mgnifam.generate_families.{path.stem}.{id(path)}")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    handler = logging.FileHandler(path, mode="w", encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    logger.addHandler(handler)
+    return logger
+
+
+def resolve_index(options: argparse.Namespace, root: Path) -> Path:
+    fasta = Path(options.fasta_file)
+    index = Path(options.fasta_index) if options.fasta_index else root / f"{fasta.name}.ssi"
+    if not index.exists() or index.stat().st_mtime_ns < fasta.stat().st_mtime_ns:
+        build_ssi_index(fasta, index)
+    return index
+
+
+def main(args: SequenceCollection[str] | None = None) -> None:
+    options = parse_args(args)
+    clusters = validate_inputs(options)
+    if options.batch_size == 0:
+        options.batch_size = 2 * options.cpus
+
+    root = Path.cwd()
+    index_path = resolve_index(options, root)
+    prepare_output_directories(root, options.chunk_num)
+    logger = configure_logger(root / "logs" / f"{options.chunk_num}.txt")
+
+    try:
+        with contextlib.ExitStack() as stack:
+            index_reader = stack.enter_context(pyhmmer.easel.SSIReader(index_path))
+            indexed_file = stack.enter_context(
+                pyhmmer.easel.SequenceFile(options.fasta_file, digital=False, index=index_reader)
+            )
+            indexed_sequences = IndexedSequences(indexed_file)
+            target_file = stack.enter_context(
+                pyhmmer.easel.SequenceFile(options.fasta_file, digital=True, alphabet=ALPHABET)
+            )
+            targets = target_file.read_block() if options.prefetch_targets else target_file
+
+            writers = Writers(
+                root=root,
+                indexed=indexed_sequences,
+                refined_families=stack.enter_context(
+                    (root / "refined_families" / f"{options.chunk_num}.tsv").open("w")
+                ),
+                discarded_clusters=stack.enter_context(
+                    (root / "discarded_clusters" / f"{options.chunk_num}.csv").open("w")
+                ),
+                successful_clusters=stack.enter_context(
+                    (root / "successful_clusters" / f"{options.chunk_num}.txt").open("w")
+                ),
+                converged_families=stack.enter_context(
+                    (root / "converged_families" / f"{options.chunk_num}.txt").open("w")
+                ),
+                family_metadata=stack.enter_context(
+                    (root / "family_metadata" / f"{options.chunk_num}.csv").open("w")
+                ),
+                family_representatives=stack.enter_context(
+                    deterministic_gzip_text(root / "family_reps" / f"{options.chunk_num}.fasta.gz")
+                ),
+            )
+            success_count = 0
+            with tempfile.TemporaryDirectory() as temporary:
+                temporary_directory = Path(temporary)
+                for batch_number, batch in enumerate(
+                    itertools.batched(clusters.items(), options.batch_size), 1
+                ):
+                    active = [Family(representative, members) for representative, members in batch]
+                    for family in active:
+                        family.initialise(indexed_sequences, options.cpus)
+
+                    for round_number in (1, 2, 3):
+                        running = [
+                            family for family in active if family.state is FamilyState.RUNNING
+                        ]
+                        if not running:
+                            break
+                        hmms = [
+                            run_hmmbuild(
+                                cast(pyhmmer.easel.DigitalMSA, family.seed_msa),
+                                f"pending_{batch_number}_{round_number}_{index}",
+                            )
+                            for index, family in enumerate(running)
+                        ]
+                        with search(
+                            hmms,
+                            targets,
+                            cpus=options.cpus,
+                            evalue=options.recruit_evalue_cutoff,
+                            logger=logger,
+                            batch_number=batch_number,
+                            round_number=round_number,
+                        ) as searched:
+                            for family, hmm, hits in zip(running, hmms, searched, strict=True):
+                                family.hmm = hmm
+                                family.qlen = hits.query.M
+                                family.records = extract_records(hits)
+                                family.advance(options, indexed_sequences)
+
+                    for family in active:
+                        family.finish(options, indexed_sequences)
+                    for family in active:
+                        success_count = emit_family(
+                            family,
+                            success_count,
+                            options.chunk_num,
+                            writers,
+                            temporary_directory,
+                        )
+        logger.info("DONE.")
+    finally:
+        for handler in logger.handlers:
+            handler.close()
+        logger.handlers.clear()
+
+
+if __name__ == "__main__":
+    main()
