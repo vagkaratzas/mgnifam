@@ -77,10 +77,11 @@ def cli_args(
     return arguments
 
 
-def run_pipeline(directory: Path, arguments: list[str]) -> None:
+def run_pipeline(directory: Path, arguments: list[str]) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     with contextlib.chdir(directory):
         gf.main(arguments)
+    return directory / "output"
 
 
 def scientific_artifacts(directory: Path) -> dict[str, bytes]:
@@ -109,7 +110,7 @@ def baseline_output(
     shared_index: Path,
 ) -> Path:
     output = tmp_path_factory.mktemp("baseline")
-    run_pipeline(
+    return run_pipeline(
         output,
         cli_args(
             fixture_directory / "clustering.tsv",
@@ -117,7 +118,6 @@ def baseline_output(
             fasta_index=shared_index,
         ),
     )
-    return output
 
 
 @pytest.mark.filterwarnings(
@@ -299,9 +299,8 @@ def test_cpus_and_sanity_anchors(
     small_fasta: Path,
     shared_index: Path,
 ) -> None:
-    cpus_four = tmp_path / "cpus-four"
-    run_pipeline(
-        cpus_four,
+    cpus_four = run_pipeline(
+        tmp_path / "cpus-four",
         cli_args(
             fixture_directory / "clustering.tsv",
             small_fasta,
@@ -336,9 +335,8 @@ def test_batch_size_invariance(
 ) -> None:
     outputs = []
     for batch_size in (1, 64):
-        output = tmp_path / f"batch-{batch_size}"
-        run_pipeline(
-            output,
+        output = run_pipeline(
+            tmp_path / f"batch-{batch_size}",
             cli_args(
                 fixture_directory / "clustering.tsv",
                 small_fasta,
@@ -367,17 +365,17 @@ def test_determinism_across_hash_seeds(
         fixture_directory / "clustering.tsv", small_fasta, fasta_index=shared_index
     )
     for hash_seed in ("1", "987654"):
-        output = tmp_path / f"hash-{hash_seed}"
-        output.mkdir()
+        run_directory = tmp_path / f"hash-{hash_seed}"
+        run_directory.mkdir()
         environment = os.environ.copy()
         environment["PYTHONHASHSEED"] = hash_seed
         subprocess.run(
             [sys.executable, "-m", "mgnifam.generate_families", *arguments],
-            cwd=output,
+            cwd=run_directory,
             env=environment,
             check=True,
         )
-        outputs.append(output)
+        outputs.append(run_directory / "output")
     assert scientific_artifacts(outputs[0]) == scientific_artifacts(outputs[1])
     for hmm_path in (outputs[0] / "hmm").glob("*.hmm.gz"):
         contents = gzip.decompress(hmm_path.read_bytes())
@@ -393,16 +391,16 @@ def test_rerun_removes_stale_family_artifacts(
     small_fasta: Path,
     shared_index: Path,
 ) -> None:
-    output = tmp_path / "rerun"
+    run_directory = tmp_path / "rerun"
     arguments = cli_args(
         fixture_directory / "clustering.tsv", small_fasta, fasta_index=shared_index
     )
-    run_pipeline(output, arguments)
+    output = run_pipeline(run_directory, arguments)
     reduced_clusters = tmp_path / "reduced.tsv"
     reduced_clusters.write_text(
         "\n".join((fixture_directory / "clustering.tsv").read_text().splitlines()[:9]) + "\n"
     )
-    run_pipeline(output, cli_args(reduced_clusters, small_fasta, fasta_index=shared_index))
+    run_pipeline(run_directory, cli_args(reduced_clusters, small_fasta, fasta_index=shared_index))
     for directory in ("seed_msa_sto", "full_msa_sto", "hmm", "rf"):
         assert all(
             "chunk_2." not in path.name and "chunk_3." not in path.name
@@ -514,9 +512,8 @@ def test_prefetch_end_to_end_equivalence(
     small_fasta: Path,
     shared_index: Path,
 ) -> None:
-    output = tmp_path / "prefetch"
-    run_pipeline(
-        output,
+    output = run_pipeline(
+        tmp_path / "prefetch",
         cli_args(
             fixture_directory / "clustering.tsv",
             small_fasta,
@@ -601,7 +598,7 @@ def test_validation_precedes_output_creation(
         setattr(arguments, name, value)
     with contextlib.chdir(tmp_path), pytest.raises(ValueError, match=expected):
         gf.validate_inputs(arguments)
-    assert not any((tmp_path / directory).exists() for directory in gf.OUTPUT_DIRECTORIES)
+    assert not (tmp_path / "output").exists()
 
 
 def test_gzip_and_malformed_tsv_rejected_before_outputs(
@@ -621,7 +618,7 @@ def test_gzip_and_malformed_tsv_rejected_before_outputs(
     malformed_options = gf.parse_args(cli_args(malformed, small_fasta))
     with contextlib.chdir(tmp_path), pytest.raises(ValueError, match="exactly two"):
         gf.validate_inputs(malformed_options)
-    assert not any((tmp_path / directory).exists() for directory in gf.OUTPUT_DIRECTORIES)
+    assert not (tmp_path / "output").exists()
 
 
 def test_hmmalign_forwards_cpus(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -664,12 +661,31 @@ def test_declared_outputs_parse_and_long_fixture_runs(
             assert msa_file.read() is not None
     assert len((baseline_output / "family_metadata" / "chunk.csv").read_text().splitlines()) == 3
 
-    long_output = tmp_path / "long"
-    run_pipeline(
-        long_output,
+    long_output = run_pipeline(
+        tmp_path / "long",
         cli_args(fixture_directory / "cluster_long.tsv", extra_fasta, chunk="long"),
     )
     assert (long_output / "successful_clusters" / "long.txt").read_text().strip()
+    assert (long_output / f"{extra_fasta.name}.ssi").is_file()
+
+
+def test_output_dir_override(
+    tmp_path: Path,
+    fixture_directory: Path,
+    small_fasta: Path,
+    shared_index: Path,
+) -> None:
+    run_directory = tmp_path / "run"
+    run_directory.mkdir()
+    output = tmp_path / "results"
+    arguments = cli_args(
+        fixture_directory / "clustering.tsv", small_fasta, fasta_index=shared_index
+    )
+    with contextlib.chdir(run_directory):
+        gf.main([*arguments, "--output_dir", str(output)])
+
+    assert all((output / directory).is_dir() for directory in gf.OUTPUT_DIRECTORIES)
+    assert not (run_directory / "output").exists()
 
 
 def test_cli_dispatches_to_generate_families(monkeypatch: pytest.MonkeyPatch) -> None:

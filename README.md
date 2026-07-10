@@ -29,6 +29,7 @@ Requires Python >= 3.12. Verify with `mgnifam --version`.
 uv run mgnifam generate_families \
     --clusters_chunk clusters.tsv \
     --fasta_file mgnifams_input.fa \
+    --output_dir output \
     --cpus 8 \
     --chunk_num 1 \
     --discard_min_rep_length 100 \
@@ -49,7 +50,8 @@ stream — and its sequence names must be unique.
 
 | flag | default | meaning |
 |---|---|---|
-| `--fasta_index` | `./<fasta basename>.ssi` | Path to an Easel SSI index. Built automatically if absent. |
+| `--fasta_index` | `<output_dir>/<fasta basename>.ssi` | Path to an Easel SSI index. Built automatically if absent. |
+| `--output_dir` | `output` | Root directory for every generated file and folder. |
 | `--batch_size` | `2 * cpus` | How many families are searched per `hmmsearch` wave. Keep it `>= cpus`. |
 | `--prefetch_targets` | off | Load the database into RAM once instead of streaming it per query. Faster, `O(database)` memory, **identical results**. |
 
@@ -74,7 +76,7 @@ uv run mgnifam generate_families --fasta_index db.fa.ssi ...
 
 ## Outputs
 
-Written under the current working directory, keyed by `--chunk_num`:
+Written under `--output_dir` (default: `output`), keyed by `--chunk_num`:
 
 | directory | contents |
 |---|---|

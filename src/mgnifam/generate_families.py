@@ -875,6 +875,7 @@ def parse_args(args: SequenceCollection[str] | None = None) -> argparse.Namespac
     parser.add_argument("--recruit_evalue_cutoff", required=True, type=float)
     parser.add_argument("--recruit_hit_length_percentage", required=True, type=float)
     parser.add_argument("--fasta_index")
+    parser.add_argument("--output_dir", type=Path, default=Path("output"))
     parser.add_argument("--batch_size", type=int, default=0)
     parser.add_argument("--prefetch_targets", action="store_true")
     return parser.parse_args(args)
@@ -951,7 +952,7 @@ def resolve_index(options: argparse.Namespace, root: Path) -> Path:
     """Return the SSI index path, building it if absent or older than the FASTA.
 
     Production runs should pass `--fasta_index` to share one index across chunk tasks;
-    otherwise every task re-indexes the whole database into its own work directory.
+    otherwise every task re-indexes the whole database under its output directory.
     """
     fasta = Path(options.fasta_file)
     index = Path(options.fasta_index) if options.fasta_index else root / f"{fasta.name}.ssi"
@@ -966,9 +967,9 @@ def main(args: SequenceCollection[str] | None = None) -> None:
     if options.batch_size == 0:
         options.batch_size = 2 * options.cpus
 
-    root = Path.cwd()
-    index_path = resolve_index(options, root)
+    root = options.output_dir
     prepare_output_directories(root, options.chunk_num)
+    index_path = resolve_index(options, root)
     logger = configure_logger(root / "logs" / f"{options.chunk_num}.txt")
 
     try:

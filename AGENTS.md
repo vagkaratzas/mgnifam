@@ -70,7 +70,10 @@ diff against the legacy baseline, expect every model to be one match state wider
 
 ## Testing
 
-`uv run pytest` — 28 tests, roughly two minutes. They run against the real
+`generate_families` writes every generated artifact under `--output_dir` (default:
+`output/`), including an automatically built SSI index.
+
+`uv run pytest` — 29 tests, roughly two minutes. They run against the real
 50,000-sequence fixtures rather than toy data, because the marginal hits that several
 tests depend on only exist at that scale.
 

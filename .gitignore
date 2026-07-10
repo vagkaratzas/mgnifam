@@ -206,6 +206,9 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
+# Generated mgnifam outputs
+output/
+
 # PyPI configuration file
 .pypirc
 

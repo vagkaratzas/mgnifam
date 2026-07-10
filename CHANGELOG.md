@@ -31,6 +31,8 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
   `eslEMEM (status code 5)` crash into a clean discard.
 - `--fasta_index`: reuse a pre-built Easel SSI index. Production runs should build one
   index upstream and share it, or every chunk task re-indexes the whole database.
+- `--output_dir`: place every generated file and directory under one root. Defaults to
+  `output`.
 - `--prefetch_targets`: load the database into RAM instead of streaming it per query.
   Faster, `O(database)` memory, and measured byte-identical to streaming.
 - `--batch_size`: how many families are searched per `hmmsearch` wave. Defaults to
@@ -43,7 +45,7 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
   uncompressed, percentages must lie in `[0, 1]`, length bounds must be ordered, and
   every cluster TSV row must hold exactly two non-empty fields.
 - A time-throttled heartbeat, logged every 60 s during a database pass.
-- `pytest` suite (28 tests) over the real 50,000-sequence fixtures, and `pre-commit`
+- `pytest` suite (29 tests) over the real 50,000-sequence fixtures, and `pre-commit`
   with `ruff`.
 
 ### Changed
