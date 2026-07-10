@@ -32,9 +32,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("command", choices=sorted(COMMANDS), help="subcommand to run")
     # REMAINDER hands every following token to the subcommand untouched, including
     # --help, so `mgnifam generate_families --help` reaches the subcommand's parser.
-    parser.add_argument(
-        "arguments", nargs=argparse.REMAINDER, help="arguments for the subcommand"
-    )
+    parser.add_argument("arguments", nargs=argparse.REMAINDER, help="arguments for the subcommand")
     namespace = parser.parse_args(arguments)
     COMMANDS[namespace.command](namespace.arguments)
 
