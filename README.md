@@ -41,7 +41,13 @@ stream — and its sequence names must be unique.
 | flag | default | meaning |
 |---|---|---|
 | `--fasta_index` | `./<fasta basename>.ssi` | Path to an Easel SSI index. Built automatically if absent. |
-| `--batch_size` | `max(2 * cpus, 16)` | How many families are searched per `hmmsearch` wave. |
+| `--batch_size` | `2 * cpus` | How many families are searched per `hmmsearch` wave. Keep it `>= cpus`. |
+| `--prefetch_targets` | off | Load the database into RAM once instead of streaming it per query. Faster, `O(database)` memory, **identical results**. |
+
+Streaming re-reads and re-parses the database once per query. `--prefetch_targets`
+parses it once and keeps it in RAM; the results are byte-identical either way, so the
+flag is purely a memory-vs-time dial. Leave it off unless the database fits comfortably
+in RAM.
 
 **On a production run, build the index once and share it.** Every chunk task would
 otherwise re-index the whole database:
@@ -90,27 +96,65 @@ Three defects accounted for most of it:
    re-filtered.
 
 On top of that, the entire FASTA was held in RAM twice — once as a
-`DigitalSequenceBlock` and once as a Python `dict` of `DigitalSequence` objects. Both
-are gone: targets stream from disk, and random access goes through an Easel SSI index.
-Families are searched in batched waves so `hmmsearch` still saturates every core.
+`DigitalSequenceBlock` and once as a Python `dict` of `DigitalSequence` objects. In the
+default (streaming) mode both are gone: targets stream from disk, and random access goes
+through an Easel SSI index. Passing `--prefetch_targets` deliberately restores the first
+copy, trading that memory back for speed. Families are searched in batched waves, so `hmmsearch` uses up to `--cpus` workers
+whenever enough families remain in the wave.
 
 ## Reproducibility
 
-Scientific outputs are byte-identical across repeated runs, across `PYTHONHASHSEED`
-values, across `--batch_size`, and — unlike the previous implementation — across
-`--cpus`. (`logs/` carries timestamps and is excluded from that contract.)
+For the dependency set resolved in the committed `uv.lock` (install with
+`uv sync --frozen`), scientific outputs are byte-identical across repeated runs, across
+`PYTHONHASHSEED` values, across `--batch_size`, across `--prefetch_targets`, and — unlike
+the previous implementation — across `--cpus`. The contract is scoped to that lockfile:
+pyhmmer, pyfamsa and pytrimal decide hit retention, alignment and serialised bytes. (`logs/` carries timestamps and is excluded from that
+contract. HMM files omit the `DATE` and `COM` lines, which are otherwise a wall-clock
+and an `argv` dump.)
 
-> **The old pipeline's results depended on how many CPUs it was given.** pyhmmer selects
-> `parallel="targets"` whenever the query count is below the CPU count, which was every
-> call in the old family-at-a-time loop. Each worker then ran its own `Pipeline` over a
-> slice of the database and applied a *per-slice* `domZ` at the inclusion threshold, so
-> extra domains were reported. Streaming targets forces `parallel="queries"`, which
-> reproduces the single-threaded answer at any core count. Output from this package
-> matches the old script run with `--cpus 1`, not its production output.
+> **The old pipeline's recruitment depended on how many CPUs it was given.** pyhmmer
+> selects `parallel="targets"` whenever the query count is below the CPU count, which was
+> every call in the old family-at-a-time loop. Each worker runs its own `Pipeline` over a
+> slice of the database, and the merge concatenates each slice's *stored* hits while
+> re-thresholding only the reporting flags. `Z` and `domZ` come out identical, but the
+> stored list grows — and the old code iterated that raw list rather than `.reported`.
+> Measured on the 50 000-sequence fixture under the old pinned `pyhmmer==0.11.1`:
+> `len(TopHits)` goes `26/19/55` at `--cpus 1` to `27/19/56` at `--cpus 4`, while
+> `.reported` stays `26/19/54` throughout.
+>
+> Forcing `parallel="queries"` reproduces the single-threaded answer at any core count.
+> On that fixture the extra hit is discarded downstream by the envelope-length filter, so
+> the *final* families were unaffected — but the divergence is real at the recruitment step.
+
+**What "matches legacy" does and does not mean.** The *search and recruitment semantics*
+target the old script at `--cpus 1`. The final artifacts deliberately differ: envelope-end
+clipping of seed MSAs, the new `<= 2`-sequence discard rule, gzip framing, the omitted HMM
+`DATE`/`COM` lines, and upgraded dependencies all change bytes, and clipping can change
+family membership and counts. This is not a byte-for-byte drop-in for the old outputs.
+
+### A known bug, preserved
+
+The old code recruits hits that **failed `--recruit_evalue_cutoff`**: it iterates the raw
+`TopHits` list, which retains stored-but-unreported entries. On the small fixture, family
+`4497037939_1_144` recruits sequence `6320430079`, which is stored but not reported, even
+at `--cpus 1`.
+
+This package **reproduces that behaviour deliberately**: it preserves legacy-at-`--cpus 1`
+raw recruitment semantics rather than silently changing the science. Switching extraction to
+`top_hits.reported` would make `--recruit_evalue_cutoff` mean what it says. That is a
+one-line change, and a decision for the maintainers.
+
+### Indexing a very large database
+
+Easel buffers up to 2 GB of keys in RAM before spilling to an external sort, which then
+needs scratch space in `TMPDIR` plus room for the final index (roughly
+`n_sequences x (name_length + 16)` bytes). Size `TMPDIR` accordingly before indexing a
+billion-record FASTA.
 
 ## Development
 
 ```bash
+uv lock --check && uv sync --frozen
 uv run pre-commit install
 uv run pre-commit run --all-files
 uv run pytest

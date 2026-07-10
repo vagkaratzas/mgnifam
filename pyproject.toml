@@ -6,11 +6,14 @@ readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Vangelis Karatzas", email = "vagkaratzas1990@gmail.com" }]
 requires-python = ">=3.12"
+# Upper bounds are deliberate: pyhmmer/pyfamsa/pytrimal decide hit retention,
+# alignment and serialised bytes, so the byte-reproducibility contract in the
+# README only holds for the resolved set recorded in uv.lock.
 dependencies = [
-    "numpy>=2.5.1",
-    "pyfamsa>=0.7.0",
-    "pyhmmer>=0.12.1",
-    "pytrimal>=0.8.5",
+    "numpy>=2.5.1,<3",
+    "pyfamsa>=0.7.0,<0.8",
+    "pyhmmer>=0.12.1,<0.13",
+    "pytrimal>=0.8.5,<0.9",
 ]
 
 [project.scripts]
