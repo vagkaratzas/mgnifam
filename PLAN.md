@@ -124,6 +124,13 @@ sensitivity Codex raised.
 safe. (Legacy called `Aligner()` = all cores, ignoring `--cpus`; this is a
 deliberate resource-behaviour change.)
 
+**F13 — Legacy's seed Stockholm has no `#=GF` lines.** `renumber_sto_msa` copies
+only `# STOCKHOLM`, `#=GC RF`, `//` and sequence rows; every `#=GF`/`#=GS`/`#=GR`
+line is dropped. Confirmed against a real legacy run: `grep -c '#=GF'
+seed_msa_sto/test_1.sto` → `0`, while `hmm/test_1.hmm` carries `NAME  test_1`.
+Setting `seed_msa.name` therefore matters only because `Builder.build_msa` requires
+a name and propagates it to `HMM.name`.
+
 **F8 — RF line shape confirms the `clip_env_ends` contract.** A real `hmmalign`
 result gave `............xxx…xxx.xxxx.x.xxx…xxx....................` — 12 leading
 dots, 33 trailing dots, 3 interior dots. Trim the leading/trailing runs, keep the
@@ -637,10 +644,15 @@ granularity.
      `cluster_long.tsv` + `mgnifams_extra.fa` (>200 aa): exit 0, every declared
      output dir exists, `hmm/*.hmm.gz` reloads via `HMMFile`,
      `family_metadata/*.csv` has one row per successful family.
-     `seed_msa_sto/*.sto.gz` must carry `#=GF ID <chunk>_<id>` (Codex #6/round 2);
-     `full_msa_sto/*.sto.gz` must merely **parse** — `hmmalign` returns an MSA with
-     `name=None`, so it has no `#=GF ID`, matching legacy. Asserting one there would
-     have contradicted the preserved semantics (Codex #5/round 4).
+     **Correction, found during implementation:** neither MSA carries `#=GF ID`.
+     Legacy's `renumber_sto_msa` drops *every* `#=GF`/`#=GS`/`#=GR` line, including
+     the `#=GF ID` that naming the seed MSA emits — verified against a real legacy
+     run. The family name survives only as the HMM's `NAME` field. So: assert
+     `hmm/*.hmm.gz` has `NAME <chunk>_<id>`, and that both `.sto.gz` files parse and
+     contain no `#=GF`. Codex's round-2 finding #6 was right that `seed_msa.name`
+     must be set before the hand build (it becomes `HMM.name`), but wrong that it
+     reaches the Stockholm output; I accepted it too readily, and only building it
+     exposed the error.
 3. **Legacy comparison is informational, not an assertion** (Codex #19). The
    baseline exists: `reference/legacy_generate_families.py` runs under a pinned
    `pyhmmer==0.11.1 / pandas==2.3.2 / pyfamsa==0.6.0 / pytrimal==0.8.2` venv.
@@ -677,6 +689,26 @@ Branch `dev`. **One feature, one commit, no push.**
 - [ ] 10. `test: pytest suite and fixtures`
 
 ### Act 4 — Verification
-- [ ] `uv run pre-commit run --all-files` clean
-- [ ] `uv run pytest` green (determinism, cpus-invariance, batch-invariance, no-`read_block`)
-- [ ] Legacy-vs-new delta report
+- [x] `uv run pre-commit run --all-files` clean
+- [x] `uv run pytest` green — 21 passed
+- [x] SSI mismatch guard raises under `python -O`
+- [x] End-to-end invariance on the 50 000-sequence fixture, scientific artifacts
+      byte-identical across: `cpus=1` vs `cpus=4` (different `PYTHONHASHSEED`),
+      streaming vs `--prefetch_targets`, default vs `--batch_size 4`
+- [x] Legacy-vs-new delta report (below)
+
+### Legacy-vs-new deltas (legacy at `cpus=1`, `clustering.tsv`)
+
+| output | result |
+|---|---|
+| `successful_clusters/` | **identical** |
+| `converged_families/` | **identical** |
+| `family_metadata/` | same 3 families, same ids, same representatives (`782510898`, `5761513631`, `1446399400`), same `converged` flags; rep regions shift |
+| `refined_families/` | 115 → 116 rows; same set of member proteins |
+| `rf/` | RF lengths 116/109/121 → 115/104/119 |
+| `seed_msa_sto/`, `full_msa_sto/`, `hmm/` | gzipped; HMMs additionally omit `DATE`/`COM` |
+
+Every delta traces to `clip_env_ends`: family 2's representative region moves
+`863-967` → `864-967` (one N-terminal envelope column), family 3's `2-120` → `4-115`.
+Family 1 gains one recruited region because a clipped seed changes its round-2 HMM
+and therefore its recruitment — the documented cascade. No unexplained delta.

@@ -545,3 +545,65 @@ VERDICT: APPROVED
 
 **Act 2 complete.** 5 rounds, 45 findings raised, 41 accepted, 2 rejected with measurements,
 2 causal claims of mine withdrawn under evidence. Proceeding to Act 3 (`/codex-build`).
+
+---
+
+## Act 3 — Build
+
+Builder: Codex (`gpt-5.6-sol`), `codex exec -s workspace-write` from the frozen `PLAN.md`.
+Reviewer: Claude. `MAX_FIX_ROUNDS=2`; **0 fix rounds needed** — Claude took the two remaining
+corrections directly, both smaller than a delegation round.
+
+> Note: the skill's `codex exec --yolo` was **denied by the auto-mode permission classifier**
+> (it disables sandbox and approval gates, which the user never authorised). Re-launched with
+> `-s workspace-write`, which grants the write access the build needs while keeping the sandbox
+> on. No workaround of the denial's intent.
+
+### Round 1 — Codex build
+
+Wrote `src/mgnifam/generate_families.py` (860 lines), `tests/conftest.py`,
+`tests/test_generate_families.py` (21 tests). Reported `uv run pytest -q` green. Self-corrected
+two of its own test expectations while building (`TextMSA.alignment` is a sequence view, not a
+tuple; a bare `COM` substring also matches the legitimate `COMPO` line).
+
+It also reported two problems with **my spec**, both correct:
+
+1. `PLAN.md` claimed the seed Stockholm retains `#=GF ID`. It does not — legacy's
+   `renumber_sto_msa` drops every `#=GF` line.
+2. The "pre-commit clean" requirement conflicted with the protected, newline-less
+   `tests/fixtures/cluster_long.tsv`.
+
+### Claude's verdict
+
+Read the full diff and re-ran the proof independently. The port is faithful: I traced the
+round-4 exit path (`hmm_3` built from `seed_msa_2`, hand build from `seed_msa_3`), the
+convergence path (`seed_msa_{k-1}`, records from the round-*k* search), the discard ordering,
+and the `provisional_id` arithmetic against the legacy source. All match. `process()` rewinds
+the `SequenceFile` and `_new_worker` reopens it per worker, so multi-round streaming is safe —
+a real hazard I checked because `_single_threaded` shares the dispatcher's target handle.
+
+**Two defects found, both fixed by Claude (not delegated):**
+
+- **`#=GF ID` was preserved in the seed `.sto`** — Codex implemented my erroneous spec
+  requirement, then flagged it. Verified against the real legacy output:
+  `grep -c '#=GF' seed_msa_sto/test_1.sto` → `0`, and `hmm/test_1.hmm` carries `NAME  test_1`.
+  Removed the branch; the test now asserts the *absence* of `#=GF` and the presence of
+  `HMM.name`. Recorded as **F13**.
+
+  Worth naming plainly: Codex-the-reviewer raised this as round-2 finding #6, I accepted it,
+  and it went unchallenged into an APPROVED spec. Only *building* it exposed the error. Five
+  rounds of adversarial review did not catch what one run of the code did.
+
+- **`cluster_long.tsv` had no trailing newline**, so `end-of-file-fixer` could never pass.
+  Added the newline; the loader is unaffected.
+
+**Independent verification** (not Codex's pasted output):
+
+- `uv run pytest -q` → **21 passed**.
+- `uv run pre-commit run --all-files` → all hooks **Passed**.
+- SSI mismatch guard **raises under `python -O`**, where `assert` would have been stripped.
+- End-to-end on the 50 000-sequence fixture, scientific artifacts **byte-identical** across
+  `cpus=1` vs `cpus=4` (with different `PYTHONHASHSEED`), streaming vs `--prefetch_targets`,
+  and default vs `--batch_size 4`. The `cpus`-dependence of the legacy pipeline is gone.
+- Legacy-vs-new deltas all trace to `clip_env_ends`; `successful_clusters` and
+  `converged_families` are identical. See the delta table in `PLAN.md`.
