@@ -2,7 +2,7 @@
 
 Iterative HMM-based protein family generation over very large sequence databases.
 
-Given a chunk of MMseqs2 clusters and a protein FASTA, `generate-families` builds an
+Given a chunk of MMseqs2 clusters and a protein FASTA, `mgnifam generate_families` builds an
 HMM from each cluster, recruits new members from the whole database, re-aligns, and
 either converges on a family or discards the cluster. It is the core algorithm of the
 [`mgnifams`](https://github.com/vagkaratzas/mgnifams) Nextflow pipeline, extracted into
@@ -14,10 +14,12 @@ a standalone, tested package.
 uv sync
 ```
 
+Requires Python >= 3.12. Verify with `mgnifam --version`.
+
 ## Usage
 
 ```bash
-uv run generate-families \
+uv run mgnifam generate_families \
     --clusters_chunk clusters.tsv \
     --fasta_file mgnifams_input.fa \
     --cpus 8 \
@@ -57,8 +59,11 @@ otherwise re-index the whole database:
 uv run python -c "from mgnifam.generate_families import build_ssi_index; \
                   build_ssi_index('db.fa', 'db.fa.ssi')"
 # then, per chunk
-uv run generate-families --fasta_index db.fa.ssi ...
+uv run mgnifam generate_families --fasta_index db.fa.ssi ...
 ```
+
+`generate_families` is the only subcommand today. `mgnifam --help` lists them, and
+`python -m mgnifam` is equivalent to the console script.
 
 ## Outputs
 
@@ -93,7 +98,7 @@ Three defects accounted for most of it:
    re-filtered once per family. It is now a single grouping pass.
 3. **The exit-branch `hmmsearch` re-ran a search that had just been performed** with
    the identical HMM, differing only in a post-filter. Its hits are now cached and
-   re-filtered.
+   re-filtered, saving a full database pass per family.
 
 On top of that, the entire FASTA was held in RAM twice — once as a
 `DigitalSequenceBlock` and once as a Python `dict` of `DigitalSequence` objects. In the
@@ -122,27 +127,24 @@ and an `argv` dump.)
 > `len(TopHits)` goes `26/19/55` at `--cpus 1` to `27/19/56` at `--cpus 4`, while
 > `.reported` stays `26/19/54` throughout.
 >
-> Forcing `parallel="queries"` reproduces the single-threaded answer at any core count.
-> On that fixture the extra hit is discarded downstream by the envelope-length filter, so
-> the *final* families were unaffected — but the divergence is real at the recruitment step.
+> Forcing `parallel="queries"` fixes this: the answer is the same at any core count.
+> Those extra stored hits were exactly the ones failing the reporting threshold, so
+> reading `.reported` closes both halves of the problem at once.
 
-**What "matches legacy" does and does not mean.** The *search and recruitment semantics*
-target the old script at `--cpus 1`. The final artifacts deliberately differ: envelope-end
-clipping of seed MSAs, the new `<= 2`-sequence discard rule, gzip framing, the omitted HMM
-`DATE`/`COM` lines, and upgraded dependencies all change bytes, and clipping can change
-family membership and counts. This is not a byte-for-byte drop-in for the old outputs.
+### Two bugs fixed, and what they change
 
-### A known bug, preserved
+**Recruitment ignored `--recruit_evalue_cutoff`.** The old code iterated the raw
+`TopHits`, which retains hits pyhmmer stored but did not report. Extraction now reads
+`top_hits.reported`. On the small fixture, family `4497037939_1_144` used to recruit
+sequence `6320430079`, which is stored but below the reporting threshold. Families are
+correspondingly smaller: on that fixture, 32/19/65 members become 31/19/61. Same
+families, same representatives, fewer spurious members.
 
-The old code recruits hits that **failed `--recruit_evalue_cutoff`**: it iterates the raw
-`TopHits` list, which retains stored-but-unreported entries. On the small fixture, family
-`4497037939_1_144` recruits sequence `6320430079`, which is stored but not reported, even
-at `--cpus 1`.
+**Recruitment depended on the CPU count**, as described above. Both halves are fixed, so
+`--recruit_evalue_cutoff` now means what it says, on any machine.
 
-This package **reproduces that behaviour deliberately**: it preserves legacy-at-`--cpus 1`
-raw recruitment semantics rather than silently changing the science. Switching extraction to
-`top_hits.reported` would make `--recruit_evalue_cutoff` mean what it says. That is a
-one-line change, and a decision for the maintainers.
+Outputs are therefore **not** byte-compatible with the legacy script. Every difference is
+enumerated in [CHANGELOG.md](CHANGELOG.md).
 
 ### Indexing a very large database
 

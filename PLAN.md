@@ -1,6 +1,22 @@
 # Plan: Port & harden `generate_families.py` into the standalone `mgnifam` repo
 _Locked via grill — by Claude + vagkaratzas. Hardened over 5 rounds of adversarial review by Codex (`gpt-5.6-sol`); `VERDICT: APPROVED`. Full transcript: `PLAN-REVIEW-LOG.md`._
 
+## Superseded after approval (2026-07-10)
+
+This plan is a historical record of how the port was designed and reviewed. Two of its
+decisions were reversed by the user once the port was working. `CHANGELOG.md` and
+`README.md` are authoritative; this file is not updated to match.
+
+1. **Raw `TopHits` iteration is gone.** The plan preserved legacy's habit of recruiting
+   hits that failed `--recruit_evalue_cutoff`, and flagged it for the user. The user
+   ruled it a bug: extraction now reads `top_hits.reported` / `hit.domains.reported`. The
+   pinned example inverts — sequence `6320430079` must **not** be recruited for query
+   `4497037939_1_144` — and family membership shrinks accordingly.
+2. **The console script is `mgnifam generate_families`**, not `generate-families`, to
+   leave room for `remove_redundant` and `merge_families`.
+
+---
+
 ## Goal
 
 Port the core family-generation algorithm of the `mgnifams` Nextflow pipeline
