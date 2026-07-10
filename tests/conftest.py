@@ -32,3 +32,12 @@ def extra_fasta(tmp_path_factory: pytest.TempPathFactory, fixture_directory: Pat
         fixture_directory / "mgnifams_extra.fa.gz",
         temporary / "mgnifams_extra.fa",
     )
+
+
+@pytest.fixture(scope="session")
+def v2_fasta(tmp_path_factory: pytest.TempPathFactory, fixture_directory: Path) -> Path:
+    temporary = tmp_path_factory.mktemp("v2-fasta")
+    return _decompress(
+        fixture_directory / "mgnifams_v2.fa.gz",
+        temporary / "mgnifams_v2.fa",
+    )

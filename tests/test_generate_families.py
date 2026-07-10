@@ -120,6 +120,23 @@ def baseline_output(
     )
 
 
+@pytest.fixture(scope="session")
+def v2_output(
+    tmp_path_factory: pytest.TempPathFactory,
+    fixture_directory: Path,
+    v2_fasta: Path,
+) -> Path:
+    return run_pipeline(
+        tmp_path_factory.mktemp("v2-full-tsv"),
+        cli_args(
+            fixture_directory / "mgnifams_v2.tsv",
+            v2_fasta,
+            cpus=2,
+            chunk="v2",
+        ),
+    )
+
+
 @pytest.mark.filterwarnings(
     "ignore:Exception ignored in.*SSIWriter:pytest.PytestUnraisableExceptionWarning"
 )
@@ -667,6 +684,49 @@ def test_declared_outputs_parse_and_long_fixture_runs(
     )
     assert (long_output / "successful_clusters" / "long.txt").read_text().strip()
     assert (long_output / f"{extra_fasta.name}.ssi").is_file()
+
+
+def test_v2_full_tsv_fixture_contains_only_clusters_with_four_or_more_members(
+    fixture_directory: Path, v2_fasta: Path
+) -> None:
+    clusters = gf.load_clusters(fixture_directory / "mgnifams_v2.tsv")
+
+    assert len(clusters) == 14
+    assert sum(map(len, clusters.values())) == 84
+    assert min(map(len, clusters.values())) >= 4
+    with v2_fasta.open() as fasta:
+        assert sum(line.startswith(">") for line in fasta) == 26_949
+
+
+def test_v2_full_tsv_end_to_end(
+    fixture_directory: Path,
+    v2_fasta: Path,
+    v2_output: Path,
+) -> None:
+    representatives = list(gf.load_clusters(fixture_directory / "mgnifams_v2.tsv"))
+    discarded = (v2_output / "discarded_clusters" / "v2.csv").read_text().splitlines()
+    discarded_representatives = {line.split(",", 1)[0] for line in discarded}
+    successful = (v2_output / "successful_clusters" / "v2.txt").read_text().splitlines()
+
+    assert discarded == [
+        "3466270235_168_276,family representative length too small,86",
+        "825086527_135_242,family representative length too small,99",
+    ]
+    assert successful == [
+        representative
+        for representative in representatives
+        if representative not in discarded_representatives
+    ]
+    assert (v2_output / "converged_families" / "v2.txt").read_text().splitlines() == [
+        str(family_id) for family_id in range(5, 13)
+    ]
+
+    metadata = (v2_output / "family_metadata" / "v2.csv").read_text().splitlines()
+    assert [line.split(",", 1)[0] for line in metadata] == [str(i) for i in range(1, 13)]
+    assert len((v2_output / "refined_families" / "v2.tsv").read_text().splitlines()) == 405
+    for directory in ("hmm", "seed_msa_sto", "full_msa_sto", "rf"):
+        assert len(list((v2_output / directory).iterdir())) == 12
+    assert (v2_output / f"{v2_fasta.name}.ssi").is_file()
 
 
 def test_output_dir_override(
