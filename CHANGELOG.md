@@ -106,6 +106,8 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
 - **The exit-branch `hmmsearch` was redundant.** It re-ran the search the preceding
   round had just performed with the identical HMM, differing only in a post-filter. Its
   hit records are cached and re-filtered, saving one full database pass per family.
+- **Discarded families were recorded as converged.** `converged_families` now contains
+  only successful family ids, written after membership and length checks have passed.
 - **`clip_ends()` discarded a column of every model.** It trims low-occupancy columns
   from both ends of an alignment, which it did correctly, but built an end-exclusive
   `range(start, end)` over *inclusive* bounds — so the last column that passed the
@@ -130,10 +132,6 @@ only on purpose:
 - In the `family_iteration > 3` exit path the HMM written to disk (hand architecture,
   built from round 3's seed MSA) is not the model used for the final search and
   alignment (round 3's model, built from round 2's seed MSA).
-- `converged_families` records a family's *provisional* id at the moment of convergence,
-  before the membership and length checks that may still discard it. A discarded family
-  releases its id to the next one, so the file can contain duplicates, or an id that
-  ends up belonging to a different family.
 - `renumber_sto_msa` drops every `#=GF`, `#=GS` and `#=GR` line — including the
   `#=GF ID` that naming the seed MSA emits — and skips duplicate sequence names.
 

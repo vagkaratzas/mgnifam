@@ -242,9 +242,7 @@ def test_small_msa_is_discarded_before_another_build(monkeypatch: pytest.MonkeyP
     assert family.discard_value == 2
 
 
-def test_converged_discard_keeps_provisional_id_for_reuse(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_converged_discard_is_not_recorded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = FakeSequences({"a": "AAAA", "b": "AAAT"})
     seed = text_msa(["a", "b"], ["AAAA", "AAAT"], "xxxx").digitize(gf.ALPHABET)
     family = gf.Family(
@@ -277,7 +275,7 @@ def test_converged_discard_keeps_provisional_id_for_reuse(
     )
     success_count = gf.emit_family(family, 0, "chunk", writers, tmp_path)
     assert success_count == 0
-    assert writers.converged_families.getvalue() == "1\n"
+    assert writers.converged_families.getvalue() == ""
 
     successful = gf.Family(
         "b",
@@ -286,10 +284,12 @@ def test_converged_discard_keeps_provisional_id_for_reuse(
         seed_msa=seed,
         full_msa=text_msa(["a", "b"], ["AAAA", "AAAT"], "xxxx"),
         full_msa_num_seqs=2,
+        ever_converged=True,
     )
     success_count = gf.emit_family(successful, success_count, "chunk", writers, tmp_path)
     assert success_count == 1
     assert successful.family_id == 1
+    assert writers.converged_families.getvalue() == "1\n"
 
 
 def test_cpus_and_sanity_anchors(

@@ -45,7 +45,8 @@ Also: `Family.advance()` and `Family.finish()` must stay side-effect free. Famil
 the rank among *successful* families in cluster-file order, so nothing may be written
 until a family's fate is known. All writing happens in `emit_family()`, called in cluster
 order. A family that converges in round 1 must not record itself ahead of an earlier
-family still running in round 3.
+family still running in round 3. Discarded families must never appear in
+`converged_families`.
 
 ## Behaviour that looks like a bug and is not
 
@@ -54,8 +55,6 @@ in `CHANGELOG.md` under *Preserved deliberately*, and each carries a comment at 
 
 - The `family_iteration > 3` path writes an HMM that is not the model used for the final
   search and alignment.
-- `converged_families` can hold duplicate ids, because a converged-then-discarded family
-  releases its provisional id to the next family.
 - `renumber_sto_msa` strips every `#=GF`/`#=GS`/`#=GR` line, so the seed Stockholm has no
   `#=GF ID`. The family name reaches the output as the HMM's `NAME` field. Asserting
   `#=GF ID` in a seed `.sto` is wrong; a plan once did, and only running the code caught it.

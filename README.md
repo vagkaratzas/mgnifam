@@ -87,7 +87,7 @@ Written under the current working directory, keyed by `--chunk_num`:
 | `family_metadata/` | `<chunk>.csv` |
 | `successful_clusters/` | `<chunk>.txt` |
 | `discarded_clusters/` | `<chunk>.csv` — `representative,reason,value` |
-| `converged_families/` | `<chunk>.txt` |
+| `converged_families/` | `<chunk>.txt` — ids of successful families that converged naturally |
 | `logs/` | `<chunk>.txt` |
 
 Family ids are a 1-based rank among *successful* families, in cluster-file order.

@@ -784,15 +784,10 @@ def emit_family(
     Must be called once per family, in cluster-file order: `provisional_id` is derived
     from how many families succeeded before this one.
 
-    A converged family records its id even when it is subsequently discarded, and the
-    next family then reuses that id. `converged_families` can therefore contain
-    duplicates, or an id that belongs to a different family. This mirrors the legacy
-    script, which appended the line at the moment of convergence, before the membership
-    and length checks that could still reject the family. Preserved on purpose.
+    Only successful families are written to `converged_families`; discarded families
+    never receive an id or appear in that file.
     """
     provisional_id = success_count + 1
-    if family.ever_converged:
-        writers.converged_families.write(f"{provisional_id}\n")
     if family.state is FamilyState.DISCARDED:
         writers.discarded_clusters.write(
             f"{family.representative},{family.discard_reason},{family.discard_value}\n"
@@ -800,6 +795,8 @@ def emit_family(
         return success_count
 
     family.family_id = provisional_id
+    if family.ever_converged:
+        writers.converged_families.write(f"{provisional_id}\n")
     family_name = f"{chunk}_{provisional_id}"
     seed_msa = cast(pyhmmer.easel.DigitalMSA, family.seed_msa)
     full_msa = cast(pyhmmer.easel.TextMSA, family.full_msa)
