@@ -1,4 +1,30 @@
 #!/usr/bin/env python3
+"""Iterative HMM-based protein family generation over very large sequence databases.
+
+Each cluster becomes a candidate family: build an HMM from its seed alignment, search
+the whole database for new members, re-align, repeat. A family converges when a round
+recruits nothing new, or is forced out after three rounds; either way it exits through
+a final hand-architecture build. Clusters that fail a length, membership or
+sequence-count check are discarded.
+
+Three invariants shape the design, and breaking any of them reintroduces a bug:
+
+1. The database never enters memory. Targets stream from a `SequenceFile`; individual
+   sequences are fetched through an Easel SSI index. `--prefetch_targets` opts back
+   into an in-RAM block, which is a pure speed/memory trade with identical results.
+
+2. `hmmsearch` is always called with `parallel="queries"`. Left to choose, pyhmmer
+   selects `parallel="targets"` whenever the query count is below `--cpus`, and its
+   merge step retains hits that no single pipeline would have reported. Results would
+   then depend on the core count of the machine.
+
+3. Families are searched in round-major waves rather than one at a time. This is what
+   makes (1) affordable: `hmmsearch` uses `min(cpus, n_queries)` workers, so a single
+   query per call would leave every core but one idle.
+
+Family ids are the 1-based rank among *successful* families in cluster-file order, so
+nothing may be written until a family's fate is known. See `emit_family`.
+"""
 
 import argparse
 import contextlib
@@ -96,7 +122,21 @@ def pytrimal_to_pyhmmer(alignment: pytrimal.Alignment) -> pyhmmer.easel.TextMSA:
 
 
 def build_ssi_index(fasta: str | os.PathLike[str], ssi_path: str | os.PathLike[str]) -> None:
-    """Build an Easel SSI index atomically beside its destination."""
+    """Build an Easel SSI index for `fasta`, replacing `ssi_path` atomically.
+
+    `fasta` must be uncompressed: Easel cannot seek within a gzip stream. Its sequence
+    names must be unique, or `DuplicateSequenceName` is raised.
+
+    The index is built inside a private directory on the destination filesystem and
+    moved into place only on success, so a concurrent reader never observes a partial
+    index and a crashed build leaves nothing behind. That directory is not merely
+    tidiness: `SSIWriter.close()` raises *before* Easel closes its own writer, so on a
+    duplicate key the native handle and any external-sort scratch files are still open
+    and cannot be cleaned up by unlinking a known path.
+
+    Safe against PID collisions and cooperating concurrent writers. Not a defence
+    against an actor with write access to the destination directory.
+    """
     fasta_path = Path(fasta)
     destination = Path(ssi_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -105,7 +145,14 @@ def build_ssi_index(fasta: str | os.PathLike[str], ssi_path: str | os.PathLike[s
 
     try:
         writer = pyhmmer.easel.SSIWriter(temporary_index)
+        # add_file wants an integer format code, not the format name.
         file_number = writer.add_file(fasta_path.name, pyhmmer.easel.SequenceFile._FORMATS["fasta"])
+        # Easel positions by record_offset alone, so data_offset and record_length are
+        # left at 0. That is sufficient for whole-record fetches and rules out
+        # subsequence fetches, which this module never performs.
+        #
+        # Duplicate detection is left to SSIWriter: a Python set of every key would be
+        # database-sized state, which is precisely what this module exists to avoid.
         with fasta_path.open("rb") as fasta_handle:
             while True:
                 record_offset = fasta_handle.tell()
@@ -131,6 +178,13 @@ def build_ssi_index(fasta: str | os.PathLike[str], ssi_path: str | os.PathLike[s
 def fetch_indexed_sequence(
     indexed: Mapping[str, pyhmmer.easel.TextSequence], name: str
 ) -> pyhmmer.easel.TextSequence:
+    """Fetch `name` from an SSI-indexed file, proving the index belongs to the file.
+
+    Raises KeyError if absent, IndexMismatchError if the index returns a record under
+    the wrong key -- which is how a stale index built against a different FASTA of the
+    same basename shows up. Deliberately not an `assert`: `python -O` strips those, and
+    the failure it guards against is a silent wrong-sequence read.
+    """
     fetched = indexed[name]
     if fetched.name != name:
         raise IndexMismatchError(
@@ -156,6 +210,12 @@ class IndexedSequences:
 def run_initial_msa(
     members: Iterable[str], indexed_sequences: IndexedSequences, cpus: int
 ) -> pyhmmer.easel.DigitalMSA | None:
+    """Align a cluster's members into its first seed MSA, or None if none were found.
+
+    Members absent from the FASTA are skipped rather than raising, matching legacy.
+    Everywhere else a missing name is an error, because it can only come from a hit
+    the database itself produced.
+    """
     sequences = []
     for member in members:
         sequence = indexed_sequences.get(member, missing_ok=True)
@@ -163,6 +223,8 @@ def run_initial_msa(
             sequences.append(pyfamsa.Sequence(id=member.encode(), sequence=sequence.seq.encode()))
     if not sequences:
         return None
+    # FAMSA's output is independent of the thread count, so honouring `cpus` costs
+    # nothing in reproducibility. Legacy used every core regardless of the allocation.
     alignment = pyfamsa.Aligner(threads=cpus).align(sequences)
     return pyfamsa_to_pyhmmer(alignment)
 
@@ -170,6 +232,14 @@ def run_initial_msa(
 def run_hmmbuild(
     seed_msa: pyhmmer.easel.DigitalMSA, name: str, *, hand: bool = False
 ) -> pyhmmer.plan7.HMM:
+    """Build an HMM from a seed alignment, naming it `name`.
+
+    `hand=True` takes the match-state architecture from the alignment's RF line instead
+    of inferring it, and is used only for the final model of a successful family.
+
+    `Builder` requires a named MSA. The name does not affect the model, so intermediate
+    rounds may pass a placeholder; only the name of the final model is written out.
+    """
     seed_msa.name = name
     architecture = "hand" if hand else "fast"
     builder = pyhmmer.plan7.Builder(ALPHABET, architecture=architecture, seed=42)
@@ -189,6 +259,22 @@ def search(
     batch_number: int,
     round_number: int,
 ) -> Iterator[Iterator[Any]]:
+    """Search `hmms` against `targets`, yielding TopHits in query order.
+
+    `targets` may be a streaming SequenceFile or a prefetched DigitalSequenceBlock; the
+    results are identical either way. Must be used as a context manager, and the
+    iterator must be consumed inside the `with` block.
+
+    `parallel="queries"` is passed explicitly and must never be removed: pyhmmer would
+    otherwise switch to target-parallelism whenever a wave holds fewer families than
+    `cpus` -- which the final wave of a batch usually does -- and target-parallelism
+    reports hits that a single pipeline would not.
+
+    A heartbeat thread logs progress every 60s. It cannot be driven by the pyhmmer
+    callback alone, which fires only once a whole query has finished; on a large
+    database that is silence for hours. The iterator is closed on the way out because
+    abandoning it part-way would otherwise leak the dispatcher's worker threads.
+    """
     completed = 0
     lock = threading.Lock()
     stop_event = threading.Event()
@@ -233,10 +319,27 @@ def search(
 
 
 def extract_records(top_hits: Any) -> list[Record]:
+    """Flatten a TopHits into (name, target_length, env_from, env_to) tuples.
+
+    Only hits and domains that cleared the pipeline's reporting thresholds are
+    returned, in HMMER's own ranking order.
+
+    Two constraints drive this:
+
+    Iterating `top_hits` directly would also yield entries HMMER stored but did
+    not report, i.e. sequences that failed `--recruit_evalue_cutoff`. The legacy
+    script did exactly that and recruited them (see CHANGELOG 1.0.0). Worse, the
+    number of such entries depends on the parallelisation strategy, which made
+    recruitment vary with `--cpus`.
+
+    The tuples must be plain values, not pyhmmer objects: a Domain holds a
+    reference to its Hit, which holds the entire TopHits. Caching Domain objects
+    across a batch would pin every result graph in memory.
+    """
     return [
         (hit.name, hit.length, domain.env_from, domain.env_to)
-        for hit in top_hits
-        for domain in hit.domains
+        for hit in top_hits.reported
+        for domain in hit.domains.reported
     ]
 
 
@@ -251,6 +354,14 @@ def filter_hits(
     recruit_hit_length_percentage: float,
     indexed_sequences: IndexedSequences,
 ) -> list[Sequence]:
+    """Resolve hit records to sequences, keeping those whose envelope is long enough.
+
+    Sequences whose envelope covers only part of the target are masked down to it, and
+    renamed `<name>/<env_from>_<env_to>`.
+
+    `exit_flag` waives the length requirement. The exit branch calls this a second time
+    over the same records, which is why the records are cached rather than re-searched.
+    """
     filtered_sequences = []
     for name, target_length, env_from, env_to in records:
         envelope_length = env_to - env_from + 1
@@ -276,6 +387,11 @@ def run_hmmalign(
 
 
 def msa_stats(msa: pyhmmer.easel.TextMSA) -> tuple[int, int]:
+    """Return (sequence count, ungapped length of the first row).
+
+    Row 0 is the family representative: hits arrive in HMMER's ranking order, so the
+    best-scoring sequence leads the alignment.
+    """
     number_of_sequences = len(msa.names)
     non_gap_representative_length = (
         len(re.sub(r"[.\-~]", "", msa.alignment[0])) if number_of_sequences else 0
@@ -284,6 +400,15 @@ def msa_stats(msa: pyhmmer.easel.TextMSA) -> tuple[int, int]:
 
 
 def clip_env_ends(msa: pyhmmer.easel.TextMSA) -> pyhmmer.easel.TextMSA:
+    """Trim the envelope overhangs from a seed alignment.
+
+    Drops the leading and trailing runs of columns where the `#=GC RF` line holds "."
+    -- the N- and C-terminal residues that fell outside the model's match states.
+    Interior "." columns are inserts between match states and are kept.
+
+    Applied to every seed-path alignment, never to the final full MSA: the full MSA is
+    the record of what each member sequence contributed, overhangs included.
+    """
     if msa.reference is None:
         raise ValueError("hmmalign result has no RF reference annotation")
     matching_columns = [index for index, value in enumerate(msa.reference) if value != "."]
@@ -328,9 +453,15 @@ def calculate_trim_positions(
 
 
 def clip_ends(msa: pyhmmer.easel.TextMSA, occupancy_threshold: float) -> pyhmmer.easel.TextMSA:
+    """Trim columns at both ends whose non-gap occupancy is below the threshold.
+
+    Distinct from `clip_env_ends`, which reads the RF line rather than gap counts.
+    """
     sequence_matrix = np.array([list(row) for row in msa.alignment])
     start_position, end_position = calculate_trim_positions(sequence_matrix, occupancy_threshold)
-    # Preserved legacy off-by-one: the final passing column is intentionally omitted.
+    # `end_position` is the index of the last column above the threshold, so this range
+    # drops it. That is a bug, faithfully carried over from the legacy script: fixing it
+    # would silently shift every alignment by one column. Change only on purpose.
     return msa.select(columns=range(start_position, end_position))
 
 
@@ -388,6 +519,8 @@ def renumber_sto_msa(
     output: IO[str],
     indexed_sequences: IndexedSequences,
     *,
+    # Passing family_file switches on metadata emission, which then requires every
+    # other metadata argument.
     family_file: IO[str] | None = None,
     metadata_file: IO[str] | None = None,
     representatives_file: IO[str] | None = None,
@@ -407,6 +540,7 @@ def renumber_sto_msa(
         raise ValueError("metadata output requires all metadata handles and identifiers")
 
     representative = True
+    # Some alignments contain the same sequence twice; legacy kept the first occurrence.
     seen_sequence_names: set[str] = set()
     with Path(in_sto_file).open(encoding="utf-8") as infile:
         for line in infile:
@@ -417,8 +551,9 @@ def renumber_sto_msa(
                 output.write(line)
             elif split_line[1] == "STOCKHOLM":
                 output.write(f"{line}\n")
-            # Legacy drops every #=GF/#=GS/#=GR line, including the "#=GF ID" that
-            # naming the seed MSA emits. The family name survives as the HMM's NAME.
+            # Every #=GF/#=GS/#=GR line is dropped, including the "#=GF ID" that naming
+            # the seed MSA emits, because legacy dropped them. The family name is not
+            # lost: it reaches the output as the HMM's NAME field.
             elif split_line[0] not in ["#=GF", "#=GS", "#=GC", "#=GR"]:
                 raw_sequence_name = split_line[0].split("/")[0]
                 sequence = re.sub(r"[.\-~]", "", split_line[1]).upper()
@@ -483,12 +618,29 @@ class Family:
         self.discard_value = value
 
     def initialise(self, indexed_sequences: IndexedSequences, cpus: int) -> None:
+        """Build the first seed MSA from the cluster's own members.
+
+        Discards on fewer than two sequences, which `hmmbuild` cannot model and which
+        surfaces as `eslEMEM (status code 5)`. The bound is `< 2`, not `<= 2`: raising
+        it here would newly discard every two-member cluster, a change to the science
+        that the `<= 2` rule after redundancy trimming does not imply.
+        """
         self.seed_msa = run_initial_msa(self.members, indexed_sequences, cpus)
         sequence_count = len(self.seed_msa.names) if self.seed_msa is not None else 0
         if sequence_count < 2:
             self.discard("too few sequences before initial hmmbuild", sequence_count)
 
     def advance(self, options: argparse.Namespace, indexed_sequences: IndexedSequences) -> None:
+        """Consume this round's hits and move the family to its next state.
+
+        Writes nothing. Every side effect is deferred to `emit_family`, because a family
+        that converges in round 1 must not record itself before an earlier family that
+        is still running in round 3 -- family ids depend on cluster order, not on the
+        order in which families finish.
+
+        On convergence the seed MSA is deliberately left untouched, so the subsequent
+        hand build sees the alignment that produced the converged model.
+        """
         filtered_sequences = filter_hits(
             self.records,
             self.qlen,
@@ -526,6 +678,14 @@ class Family:
         self.seed_msa = trimmed.digitize(ALPHABET)
 
     def finish(self, options: argparse.Namespace, indexed_sequences: IndexedSequences) -> None:
+        """Run the exit branch: relax the envelope filter, then build the full MSA.
+
+        No new search is performed. The exit branch's model is always the one the last
+        round already searched with -- on convergence because that is the round that
+        converged, and after round 3 because the fourth pass never builds a new model --
+        so this re-filters the cached records with `exit_flag` instead, at the cost of a
+        whole database pass saved per family.
+        """
         if self.state not in (FamilyState.RUNNING, FamilyState.CONVERGED):
             return
         sequence_count = len(self.seed_msa.names) if self.seed_msa is not None else 0
@@ -608,6 +768,17 @@ def emit_family(
     writers: Writers,
     temporary_directory: Path,
 ) -> int:
+    """Write a finished family's artifacts and return the new successful-family count.
+
+    Must be called once per family, in cluster-file order: `provisional_id` is derived
+    from how many families succeeded before this one.
+
+    A converged family records its id even when it is subsequently discarded, and the
+    next family then reuses that id. `converged_families` can therefore contain
+    duplicates, or an id that belongs to a different family. This mirrors the legacy
+    script, which appended the line at the moment of convergence, before the membership
+    and length checks that could still reject the family. Preserved on purpose.
+    """
     provisional_id = success_count + 1
     if family.ever_converged:
         writers.converged_families.write(f"{provisional_id}\n")
@@ -623,6 +794,9 @@ def emit_family(
     full_msa = cast(pyhmmer.easel.TextMSA, family.full_msa)
     final_hmm = run_hmmbuild(seed_msa, family_name, hand=True)
     final_hmm.name = family_name
+    # Builder stamps DATE from the wall clock and COM from sys.argv. Both are serialised
+    # into the HMM, and DATE is formatted through the locale. Dropping them is what makes
+    # the file byte-reproducible; the family name survives as NAME.
     final_hmm.creation_time = None
     final_hmm.command_line = None
 
@@ -674,7 +848,12 @@ def load_clusters(path: str | os.PathLike[str]) -> dict[str, list[str]]:
 
 
 def parse_args(args: SequenceCollection[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Process clustering data and extract sequences.")
+    # prog is spelled out because this parser is reached through the `mgnifam`
+    # dispatcher, which would otherwise leave argv[0] in the usage line.
+    parser = argparse.ArgumentParser(
+        prog="mgnifam generate_families",
+        description="Build protein families from a chunk of sequence clusters.",
+    )
     parser.add_argument("-c", "--clusters_chunk", required=True)
     parser.add_argument("-f", "--fasta_file", required=True)
     parser.add_argument("-p", "--cpus", required=True, type=int)
@@ -734,8 +913,15 @@ def validate_inputs(options: argparse.Namespace) -> dict[str, list[str]]:
 
 
 def prepare_output_directories(root: Path, chunk: str) -> None:
+    """Create the output tree and clear this chunk's per-family artifacts.
+
+    Without the clearing step, a rerun that produces fewer families leaves the surplus
+    behind and the directory mixes two runs.
+    """
     for directory in OUTPUT_DIRECTORIES:
         (root / directory).mkdir(parents=True, exist_ok=True)
+    # An exact numeric suffix, not a `<chunk>_*` glob: chunk "foo" would otherwise
+    # delete "foo_bar_1", which belongs to chunk "foo_bar".
     artifact_pattern = re.compile(rf"{re.escape(chunk)}_\d+\..*")
     for directory in ("seed_msa_sto", "full_msa_sto", "hmm", "rf"):
         for path in (root / directory).iterdir():
@@ -754,6 +940,11 @@ def configure_logger(path: Path) -> logging.Logger:
 
 
 def resolve_index(options: argparse.Namespace, root: Path) -> Path:
+    """Return the SSI index path, building it if absent or older than the FASTA.
+
+    Production runs should pass `--fasta_index` to share one index across chunk tasks;
+    otherwise every task re-indexes the whole database into its own work directory.
+    """
     fasta = Path(options.fasta_file)
     index = Path(options.fasta_index) if options.fasta_index else root / f"{fasta.name}.ssi"
     if not index.exists() or index.stat().st_mtime_ns < fasta.stat().st_mtime_ns:

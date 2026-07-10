@@ -1,3 +1,18 @@
+"""Verification suite for the family-generation port.
+
+The end-to-end tests run against the real 50,000-sequence fixtures rather than toy
+data, because several of the properties under test -- the reporting threshold, hit
+ordering, envelope clipping -- only appear on a database large enough to produce
+marginal hits.
+
+Three tests exist precisely because an end-to-end run cannot observe what they check:
+`test_unreported_hit_is_not_recruited_and_prefetch_matches`,
+`test_index_mismatch_guard_and_optimized_python`, and
+`test_extracted_records_do_not_retain_pyhmmer_results`. Each guards an invariant whose
+violation leaves the final artifacts looking correct. Read their docstrings before
+deleting them as redundant.
+"""
+
 import argparse
 import contextlib
 import gc
@@ -12,6 +27,7 @@ from pathlib import Path
 import pyhmmer
 import pytest
 
+from mgnifam import __version__, cli
 from mgnifam import generate_families as gf
 
 
@@ -390,6 +406,12 @@ def test_rerun_removes_stale_family_artifacts(
 
 
 def _raw_signature(top_hits: object) -> list[tuple[str, float, tuple[tuple[int, int], ...]]]:
+    """Signature over the *stored* hit list, including entries below the report cutoff.
+
+    Deliberately not `.reported`: comparing streaming against prefetched targets must
+    prove they agree on every hit pyhmmer retained, not merely on the ones that survive
+    filtering.
+    """
     return [
         (
             hit.name,
@@ -400,7 +422,22 @@ def _raw_signature(top_hits: object) -> list[tuple[str, float, tuple[tuple[int, 
     ]
 
 
-def test_raw_unreported_hit_and_prefetch_equivalence(small_fasta: Path, shared_index: Path) -> None:
+def test_unreported_hit_is_not_recruited_and_prefetch_matches(
+    small_fasta: Path, shared_index: Path
+) -> None:
+    """Sequences that fail --recruit_evalue_cutoff must never reach a family.
+
+    Query 4497037939_1_144 is the pinned example: pyhmmer *stores* 55 hits for it but
+    *reports* 54. The 55th, 6320430079, is below the reporting threshold. The legacy
+    script iterated the stored list and recruited it; extract_records must not.
+
+    An end-to-end test cannot see this. The stray hit is removed later anyway, by the
+    envelope-length filter, so the final families look the same either way. Only a
+    direct assertion on extraction can catch a regression here.
+
+    The same TopHits also proves streaming and prefetched targets agree exactly, which
+    is what makes --prefetch_targets a pure memory/speed trade.
+    """
     logger = logging.getLogger("test-search")
     with (
         pyhmmer.easel.SSIReader(shared_index) as reader,
@@ -437,14 +474,24 @@ def test_raw_unreported_hit_and_prefetch_equivalence(small_fasta: Path, shared_i
             ) as searched:
                 results.append(next(searched))
     streaming, prefetched = results
+
+    # The stored list still holds the sub-threshold hit; the reported view does not.
     assert len(streaming) == len(prefetched) == 55
     assert len(streaming.reported) == len(prefetched.reported) == 54
     assert _raw_signature(streaming) == _raw_signature(prefetched)
-    assert "6320430079" in [record[0] for record in gf.extract_records(streaming)]
+
+    stored_names = [hit.name for hit in streaming]
+    extracted_names = [record[0] for record in gf.extract_records(streaming)]
+    assert "6320430079" in stored_names
+    assert "6320430079" not in extracted_names
+    assert len(extracted_names) == len(gf.extract_records(prefetched))
+
     with (
         pyhmmer.easel.SSIReader(shared_index) as reader,
         pyhmmer.easel.SequenceFile(small_fasta, digital=False, index=reader) as indexed_file,
     ):
+        # exit_flag=True waives the envelope-length filter, so nothing but the reporting
+        # threshold can be keeping 6320430079 out.
         recruited = gf.filter_hits(
             gf.extract_records(streaming),
             streaming.query.M,
@@ -452,7 +499,7 @@ def test_raw_unreported_hit_and_prefetch_equivalence(small_fasta: Path, shared_i
             0.9,
             gf.IndexedSequences(indexed_file),
         )
-    assert "6320430079" in gf.unmask_sequence_names(recruited)
+    assert "6320430079" not in gf.unmask_sequence_names(recruited)
 
 
 def test_prefetch_end_to_end_equivalence(
@@ -618,3 +665,33 @@ def test_declared_outputs_parse_and_long_fixture_runs(
         cli_args(fixture_directory / "cluster_long.tsv", extra_fasta, chunk="long"),
     )
     assert (long_output / "successful_clusters" / "long.txt").read_text().strip()
+
+
+def test_cli_dispatches_to_generate_families(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`mgnifam generate_families ...` forwards its arguments untouched."""
+    received: list[list[str]] = []
+    monkeypatch.setitem(cli.COMMANDS, "generate_families", lambda argv: received.append(list(argv)))
+    cli.main(["generate_families", "--cpus", "4", "--prefetch_targets"])
+    assert received == [["--cpus", "4", "--prefetch_targets"]]
+
+
+def test_cli_rejects_unknown_command() -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["merge_families"])
+    assert excinfo.value.code == 2
+
+
+def test_cli_reports_version(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["--version"])
+    assert excinfo.value.code == 0
+    assert capsys.readouterr().out.strip() == f"mgnifam {__version__}"
+
+
+def test_console_script_and_module_entry_points_agree() -> None:
+    """The `mgnifam` script and `python -m mgnifam` are the same program."""
+    script = subprocess.run(["mgnifam", "--version"], capture_output=True, text=True, check=True)
+    module = subprocess.run(
+        [sys.executable, "-m", "mgnifam", "--version"], capture_output=True, text=True, check=True
+    )
+    assert script.stdout == module.stdout == f"mgnifam {__version__}\n"
