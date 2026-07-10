@@ -43,7 +43,7 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
   uncompressed, percentages must lie in `[0, 1]`, length bounds must be ordered, and
   every cluster TSV row must hold exactly two non-empty fields.
 - A time-throttled heartbeat, logged every 60 s during a database pass.
-- `pytest` suite (25 tests) over the real 50,000-sequence fixtures, and `pre-commit`
+- `pytest` suite (27 tests) over the real 50,000-sequence fixtures, and `pre-commit`
   with `ruff`.
 
 ### Changed
@@ -114,8 +114,11 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
 Behaviour that looks wrong and is reproduced anyway, to keep the port faithful. Change
 only on purpose:
 
-- `clip_ends()` (the gap-occupancy trimmer, distinct from `clip_env_ends`) drops the
-  last column that passed the occupancy threshold, via `range(start, end)`.
+- `clip_ends()` (the gap-occupancy trimmer, distinct from `clip_env_ends`) correctly
+  trims low-occupancy columns from both ends, but its end-exclusive `range(start, end)`
+  discards the last column that *passed* the threshold as well. If no column passes,
+  `np.argmax` over an all-`False` array yields 0 for both scans and the alignment is
+  returned intact except for its final column.
 - In the `family_iteration > 3` exit path the HMM written to disk (hand architecture,
   built from round 3's seed MSA) is not the model used for the final search and
   alignment (round 3's model, built from round 2's seed MSA).

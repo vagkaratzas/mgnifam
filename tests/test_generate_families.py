@@ -24,6 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pyhmmer
 import pytest
 
@@ -695,3 +696,48 @@ def test_console_script_and_module_entry_points_agree() -> None:
         [sys.executable, "-m", "mgnifam", "--version"], capture_output=True, text=True, check=True
     )
     assert script.stdout == module.stdout == f"mgnifam {__version__}\n"
+
+
+def test_clip_ends_trims_both_gappy_ends_and_one_column_too_many() -> None:
+    """clip_ends trims both ends, but `range(start, end)` also eats the last good column.
+
+    Pins the legacy off-by-one rather than blessing it. calculate_trim_positions returns
+    the first and last column that clear the occupancy threshold, and the caller then
+    builds an end-exclusive range over them.
+
+    Verified identical to reference/legacy_generate_families.py under its pinned
+    dependencies, so this is inherited behaviour, not a porting mistake. Fixing it shifts
+    every downstream alignment by one column; do it deliberately, not in passing.
+    """
+    # Columns 0-1 and 8-9 are 25% occupied, columns 2-7 are full.
+    rows = ["--ABCDEF--", "--ABCDEF--", "--ABCDEF--", "XXABCDEFXX"]
+    matrix = np.array([list(row) for row in rows])
+
+    assert gf.calculate_trim_positions(matrix, 0.5) == (2, 7)
+
+    msa = gf.pyhmmer.easel.TextMSA(
+        name="t",
+        sequences=[
+            gf.pyhmmer.easel.TextSequence(name=f"s{index}", sequence=row)
+            for index, row in enumerate(rows)
+        ],
+    )
+    clipped = list(gf.clip_ends(msa, 0.5).alignment)
+
+    # Leading and trailing gappy columns are gone -- the function does trim both ends.
+    assert clipped == ["ABCDE"] * 4
+    # ...but column 7 ("F") passed the threshold and was dropped anyway.
+    assert not any("F" in row for row in clipped)
+
+
+def test_calculate_trim_positions_degenerate_columns() -> None:
+    """When no column clears the threshold, np.argmax on an all-False array returns 0.
+
+    start and end then span the whole alignment, so clip_ends trims nothing except the
+    final column. Legacy does the same. Recorded so a future fix has a baseline.
+    """
+    nothing_passes = np.array([list(row) for row in ["-A-", "---", "---", "---"]])
+    assert gf.calculate_trim_positions(nothing_passes, 0.5) == (0, 2)
+
+    everything_passes = np.array([list(row) for row in ["ABC"] * 4])
+    assert gf.calculate_trim_positions(everything_passes, 0.5) == (0, 2)

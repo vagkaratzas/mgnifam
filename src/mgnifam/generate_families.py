@@ -443,6 +443,12 @@ def run_pytrimal_reps(
 def calculate_trim_positions(
     sequence_matrix: np.ndarray, occupancy_threshold: float
 ) -> tuple[int, int]:
+    """Return the first and last column indices whose non-gap occupancy exceeds the threshold.
+
+    Degenerate case, inherited from legacy: when no column passes, `np.argmax` over an
+    all-False array returns 0, so this reports `(0, ncols - 1)` -- the full span -- rather
+    than signalling that nothing qualifies.
+    """
     numeric_matrix = np.where(sequence_matrix == "-", 0, 1)
     column_percentages = np.sum(numeric_matrix, axis=0) / numeric_matrix.shape[0]
     start_position = int(np.argmax(column_percentages > occupancy_threshold))
@@ -456,12 +462,18 @@ def clip_ends(msa: pyhmmer.easel.TextMSA, occupancy_threshold: float) -> pyhmmer
     """Trim columns at both ends whose non-gap occupancy is below the threshold.
 
     Distinct from `clip_env_ends`, which reads the RF line rather than gap counts.
+
+    Carries two legacy defects, both reproduced on purpose and pinned by tests. Fixing
+    either shifts every downstream alignment, so change them only deliberately:
+
+    - The last column that *passed* the threshold is discarded along with the failing
+      ones, because the range below is end-exclusive.
+    - If no column passes, `calculate_trim_positions` returns the full span (see its
+      note), and the alignment survives intact but for its final column.
     """
     sequence_matrix = np.array([list(row) for row in msa.alignment])
     start_position, end_position = calculate_trim_positions(sequence_matrix, occupancy_threshold)
-    # `end_position` is the index of the last column above the threshold, so this range
-    # drops it. That is a bug, faithfully carried over from the legacy script: fixing it
-    # would silently shift every alignment by one column. Change only on purpose.
+    # end_position is the last passing column, and range() excludes its stop value.
     return msa.select(columns=range(start_position, end_position))
 
 
