@@ -321,7 +321,11 @@ def test_cpus_and_sanity_anchors(
         "5761513631",
         "1446399400",
     ]
-    assert (baseline_output / "converged_families" / "chunk.txt").read_text() == "2\n"
+    # Families 2 and 3 recruit nothing new on their second pass. Family 3 only started
+    # converging once clip_ends stopped discarding a column of its model (CHANGELOG 1.0.0).
+    assert (baseline_output / "converged_families" / "chunk.txt").read_text() == "2\n3\n"
+    # One representative per successful family, and ids are contiguous from 1.
+    assert [line.split(",")[0] for line in metadata] == ["1", "2", "3"]
 
 
 def test_batch_size_invariance(
@@ -698,16 +702,11 @@ def test_console_script_and_module_entry_points_agree() -> None:
     assert script.stdout == module.stdout == f"mgnifam {__version__}\n"
 
 
-def test_clip_ends_trims_both_gappy_ends_and_one_column_too_many() -> None:
-    """clip_ends trims both ends, but `range(start, end)` also eats the last good column.
+def test_clip_ends_keeps_every_column_above_the_occupancy_threshold() -> None:
+    """Both gappy ends are trimmed, and the outermost passing columns survive.
 
-    Pins the legacy off-by-one rather than blessing it. calculate_trim_positions returns
-    the first and last column that clear the occupancy threshold, and the caller then
-    builds an end-exclusive range over them.
-
-    Verified identical to reference/legacy_generate_families.py under its pinned
-    dependencies, so this is inherited behaviour, not a porting mistake. Fixing it shifts
-    every downstream alignment by one column; do it deliberately, not in passing.
+    The legacy script built an end-exclusive `range(start, end)` over inclusive bounds and
+    so discarded the last column that passed. Fixed in 1.0.0; this pins the fix.
     """
     # Columns 0-1 and 8-9 are 25% occupied, columns 2-7 are full.
     rows = ["--ABCDEF--", "--ABCDEF--", "--ABCDEF--", "XXABCDEFXX"]
@@ -715,29 +714,50 @@ def test_clip_ends_trims_both_gappy_ends_and_one_column_too_many() -> None:
 
     assert gf.calculate_trim_positions(matrix, 0.5) == (2, 7)
 
-    msa = gf.pyhmmer.easel.TextMSA(
+    msa = pyhmmer.easel.TextMSA(
         name="t",
         sequences=[
-            gf.pyhmmer.easel.TextSequence(name=f"s{index}", sequence=row)
+            pyhmmer.easel.TextSequence(name=f"s{index}", sequence=row)
             for index, row in enumerate(rows)
         ],
     )
     clipped = list(gf.clip_ends(msa, 0.5).alignment)
 
-    # Leading and trailing gappy columns are gone -- the function does trim both ends.
-    assert clipped == ["ABCDE"] * 4
-    # ...but column 7 ("F") passed the threshold and was dropped anyway.
-    assert not any("F" in row for row in clipped)
+    # Column 7 ("F") passed the threshold and is retained; the gappy flanks are gone.
+    assert clipped == ["ABCDEF"] * 4
 
 
-def test_calculate_trim_positions_degenerate_columns() -> None:
-    """When no column clears the threshold, np.argmax on an all-False array returns 0.
+def test_clip_ends_returns_the_alignment_unchanged_when_no_column_passes() -> None:
+    """No qualifying column means nothing to trim, not "trim everything but the last".
 
-    start and end then span the whole alignment, so clip_ends trims nothing except the
-    final column. Legacy does the same. Recorded so a future fix has a baseline.
+    `np.argmax` over an all-False array returns 0, which is how the legacy script silently
+    reported the full span here and dropped the final column. `calculate_trim_positions`
+    now returns None so the caller can tell the two cases apart.
     """
-    nothing_passes = np.array([list(row) for row in ["-A-", "---", "---", "---"]])
-    assert gf.calculate_trim_positions(nothing_passes, 0.5) == (0, 2)
+    rows = ["-A-", "---", "---", "---"]
+    matrix = np.array([list(row) for row in rows])
+    assert gf.calculate_trim_positions(matrix, 0.5) is None
 
-    everything_passes = np.array([list(row) for row in ["ABC"] * 4])
-    assert gf.calculate_trim_positions(everything_passes, 0.5) == (0, 2)
+    msa = pyhmmer.easel.TextMSA(
+        name="t",
+        sequences=[
+            pyhmmer.easel.TextSequence(name=f"s{index}", sequence=row)
+            for index, row in enumerate(rows)
+        ],
+    )
+    assert list(gf.clip_ends(msa, 0.5).alignment) == rows
+
+
+def test_clip_ends_is_identity_when_every_column_passes() -> None:
+    rows = ["ABC"] * 4
+    matrix = np.array([list(row) for row in rows])
+    assert gf.calculate_trim_positions(matrix, 0.5) == (0, 2)
+
+    msa = pyhmmer.easel.TextMSA(
+        name="t",
+        sequences=[
+            pyhmmer.easel.TextSequence(name=f"s{index}", sequence=row)
+            for index, row in enumerate(rows)
+        ],
+    )
+    assert list(gf.clip_ends(msa, 0.5).alignment) == rows

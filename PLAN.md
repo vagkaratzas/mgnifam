@@ -14,6 +14,10 @@ decisions were reversed by the user once the port was working. `CHANGELOG.md` an
    `4497037939_1_144` — and family membership shrinks accordingly.
 2. **The console script is `mgnifam generate_families`**, not `generate-families`, to
    leave room for `remove_redundant` and `merge_families`.
+3. **The `clip_ends()` off-by-one is fixed**, not preserved. The plan kept it to avoid
+   shifting alignments; the user chose the sane behaviour. Every column above the
+   occupancy threshold now survives, and an alignment with no qualifying column is
+   returned untouched instead of losing its final column.
 
 ---
 

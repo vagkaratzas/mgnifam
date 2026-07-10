@@ -52,10 +52,6 @@ family still running in round 3.
 Do not "fix" these. They are reproduced from the legacy script on purpose, are documented
 in `CHANGELOG.md` under *Preserved deliberately*, and each carries a comment at the site:
 
-- `clip_ends()` trims the low-occupancy columns at *both* ends, as intended, but its
-  end-exclusive `range(start, end)` also discards the last column that passed the
-  threshold. And when no column passes, `np.argmax` over an all-`False` array returns 0
-  for both scans, so it trims nothing except that final column. Both match legacy.
 - The `family_iteration > 3` path writes an HMM that is not the model used for the final
   search and alignment.
 - `converged_families` can hold duplicate ids, because a converged-then-discarded family
@@ -68,9 +64,14 @@ There are two distinct clipping functions. `clip_env_ends()` reads the `#=GC RF`
 trims envelope overhangs from seed alignments. `clip_ends()` reads gap occupancy and runs
 after redundancy trimming. They are not interchangeable.
 
+`clip_ends()` used to be on the list above: it dropped the last column that passed the
+occupancy threshold, and reported a full span when no column passed. Both were fixed in
+1.0.0, so it now diverges from `reference/legacy_generate_families.py` on purpose. If you
+diff against the legacy baseline, expect every model to be one match state wider.
+
 ## Testing
 
-`uv run pytest` — 27 tests, roughly two minutes. They run against the real
+`uv run pytest` — 28 tests, roughly two minutes. They run against the real
 50,000-sequence fixtures rather than toy data, because the marginal hits that several
 tests depend on only exist at that scale.
 

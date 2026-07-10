@@ -43,7 +43,7 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
   uncompressed, percentages must lie in `[0, 1]`, length bounds must be ordered, and
   every cluster TSV row must hold exactly two non-empty fields.
 - A time-throttled heartbeat, logged every 60 s during a database pass.
-- `pytest` suite (27 tests) over the real 50,000-sequence fixtures, and `pre-commit`
+- `pytest` suite (28 tests) over the real 50,000-sequence fixtures, and `pre-commit`
   with `ruff`.
 
 ### Changed
@@ -106,6 +106,19 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
 - **The exit-branch `hmmsearch` was redundant.** It re-ran the search the preceding
   round had just performed with the identical HMM, differing only in a post-filter. Its
   hit records are cached and re-filtered, saving one full database pass per family.
+- **`clip_ends()` discarded a column of every model.** It trims low-occupancy columns
+  from both ends of an alignment, which it did correctly, but built an end-exclusive
+  `range(start, end)` over *inclusive* bounds — so the last column that passed the
+  occupancy threshold was thrown away with the failing ones. Every seed alignment, and
+  therefore every HMM, was one match state short. Separately, when no column passed the
+  threshold, `np.argmax` over an all-`False` array returned 0 for both scans, so the
+  function reported the full span and silently trimmed nothing but the final column;
+  `calculate_trim_positions` now returns `None` and the alignment is returned unchanged.
+
+  On the small fixture the recovered column lengthens each family's model
+  (representative lengths 104 → 105 and 112 → 113), and family `4497037939_1_144` now
+  converges, having recruited nothing new once its model stopped losing a column. Family
+  count, representatives and membership are unaffected.
 - Output file handles were left unclosed, and `discard_value = 0.0` was re-initialised
   at four call sites.
 
@@ -114,11 +127,6 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
 Behaviour that looks wrong and is reproduced anyway, to keep the port faithful. Change
 only on purpose:
 
-- `clip_ends()` (the gap-occupancy trimmer, distinct from `clip_env_ends`) correctly
-  trims low-occupancy columns from both ends, but its end-exclusive `range(start, end)`
-  discards the last column that *passed* the threshold as well. If no column passes,
-  `np.argmax` over an all-`False` array yields 0 for both scans and the alignment is
-  returned intact except for its final column.
 - In the `family_iteration > 3` exit path the HMM written to disk (hand architecture,
   built from round 3's seed MSA) is not the model used for the final search and
   alignment (round 3's model, built from round 2's seed MSA).

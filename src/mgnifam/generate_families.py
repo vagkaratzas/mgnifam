@@ -442,39 +442,38 @@ def run_pytrimal_reps(
 
 def calculate_trim_positions(
     sequence_matrix: np.ndarray, occupancy_threshold: float
-) -> tuple[int, int]:
+) -> tuple[int, int] | None:
     """Return the first and last column indices whose non-gap occupancy exceeds the threshold.
 
-    Degenerate case, inherited from legacy: when no column passes, `np.argmax` over an
-    all-False array returns 0, so this reports `(0, ncols - 1)` -- the full span -- rather
-    than signalling that nothing qualifies.
+    Both bounds are inclusive. Returns None when no column qualifies, which callers must
+    distinguish from a span: an `np.argmax` over an all-False array silently yields 0, and
+    the legacy script reported the full alignment in that case.
     """
     numeric_matrix = np.where(sequence_matrix == "-", 0, 1)
     column_percentages = np.sum(numeric_matrix, axis=0) / numeric_matrix.shape[0]
-    start_position = int(np.argmax(column_percentages > occupancy_threshold))
-    end_position = int(
-        len(column_percentages) - np.argmax(column_percentages[::-1] > occupancy_threshold) - 1
-    )
-    return start_position, end_position
+    passing_columns = np.flatnonzero(column_percentages > occupancy_threshold)
+    if passing_columns.size == 0:
+        return None
+    return int(passing_columns[0]), int(passing_columns[-1])
 
 
 def clip_ends(msa: pyhmmer.easel.TextMSA, occupancy_threshold: float) -> pyhmmer.easel.TextMSA:
-    """Trim columns at both ends whose non-gap occupancy is below the threshold.
+    """Trim the low-occupancy columns from both ends of an alignment.
 
-    Distinct from `clip_env_ends`, which reads the RF line rather than gap counts.
+    Every column that clears the threshold is kept, including the outermost ones. When no
+    column clears it the alignment is returned unchanged, because there is no meaningful
+    span to keep and an empty alignment would crash the next `hmmbuild`.
 
-    Carries two legacy defects, both reproduced on purpose and pinned by tests. Fixing
-    either shifts every downstream alignment, so change them only deliberately:
-
-    - The last column that *passed* the threshold is discarded along with the failing
-      ones, because the range below is end-exclusive.
-    - If no column passes, `calculate_trim_positions` returns the full span (see its
-      note), and the alignment survives intact but for its final column.
+    Distinct from `clip_env_ends`, which reads the RF line rather than gap counts, and
+    runs earlier in the round.
     """
     sequence_matrix = np.array([list(row) for row in msa.alignment])
-    start_position, end_position = calculate_trim_positions(sequence_matrix, occupancy_threshold)
-    # end_position is the last passing column, and range() excludes its stop value.
-    return msa.select(columns=range(start_position, end_position))
+    positions = calculate_trim_positions(sequence_matrix, occupancy_threshold)
+    if positions is None:
+        return msa
+    start_position, end_position = positions
+    # end_position is inclusive; range() excludes its stop value.
+    return msa.select(columns=range(start_position, end_position + 1))
 
 
 def extract_first_part(sequence_name: str) -> str:
