@@ -270,7 +270,7 @@ def search(
     `cpus` -- which the final wave of a batch usually does -- and target-parallelism
     reports hits that a single pipeline would not.
 
-    A heartbeat thread logs progress every 60s. It cannot be driven by the pyhmmer
+    A heartbeat thread logs progress every 300s. It cannot be driven by the pyhmmer
     callback alone, which fires only once a whole query has finished; on a large
     database that is silence for hours. The iterator is closed on the way out because
     abandoning it part-way would otherwise leak the dispatcher's worker threads.
@@ -286,7 +286,7 @@ def search(
             completed += 1
 
     def heartbeat() -> None:
-        while not stop_event.wait(60):
+        while not stop_event.wait(300):
             with lock:
                 current = completed
             logger.info(
