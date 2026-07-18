@@ -253,10 +253,30 @@ def test_small_msa_is_discarded_before_another_build(monkeypatch: pytest.MonkeyP
         lambda *_args, **_kwargs: pytest.fail("hmmbuild must not be called"),
     )
     family = gf.Family("a", ["a", "b", "c"], hmm=object(), records=[("a", 4, 1, 4)])
-    family.advance(family_options(), FakeSequences({"a": "AAAA"}))
+    family.advance(family_options(), FakeSequences({"a": "AAAA"}), 1)
     assert family.state is gf.FamilyState.DISCARDED
     assert family.discard_reason == "too few sequences after redundancy filtering"
     assert family.discard_value == 2
+
+
+def test_final_round_leaves_the_searched_seed_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The last round must not re-align and trim: its output would feed no build.
+
+    Doing it anyway is what left the legacy exit path exporting a hand-built HMM one
+    generation ahead of the model that produced the family's hits and full MSA.
+    """
+    seed = text_msa(["a", "b", "c"], ["AAAA", "AAAT", "AATT"], "xxxx").digitize(gf.ALPHABET)
+    monkeypatch.setattr(
+        gf,
+        "run_hmmalign",
+        lambda *_args, **_kwargs: pytest.fail("the final round must not re-align"),
+    )
+    family = gf.Family(
+        "a", ["a", "b", "c"], seed_msa=seed, hmm=object(), records=[("a", 4, 1, 4)], qlen=4
+    )
+    family.advance(family_options(), FakeSequences({"a": "AAAA"}), gf.MAX_ROUNDS)
+    assert family.state is gf.FamilyState.RUNNING
+    assert family.seed_msa is seed
 
 
 def test_converged_discard_is_not_recorded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -272,7 +292,7 @@ def test_converged_discard_is_not_recorded(tmp_path: Path, monkeypatch: pytest.M
         total_checked_sequences={"a"},
     )
     options = family_options(discard_min_starting_membership=1.0)
-    family.advance(options, store)
+    family.advance(options, store, 1)
     assert family.state is gf.FamilyState.CONVERGED
     family.finish(options, store)
     assert family.state is gf.FamilyState.DISCARDED

@@ -29,8 +29,9 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
   C-terminal envelope overhangs — from every seed-path alignment. Interior `.` columns
   are inserts between match states and are kept. Not applied to the final full MSA.
 - Discard rule: a family with `<= 2` sequences after redundancy trimming is dropped. A
-  separate `< 2` guard before the initial and hand builds converts `hmmbuild`'s
-  `eslEMEM (status code 5)` crash into a clean discard.
+  separate `< 2` guard before the initial build converts `hmmbuild`'s `eslEMEM (status
+  code 5)` crash into a clean discard. The final hand build needs no such guard: round 1
+  can never converge, so every seed reaching it has already passed the `<= 2` rule.
 - `--fasta_index`: reuse a pre-built Easel SSI index. Production runs should build one
   index upstream and share it, or every chunk task re-indexes the whole database.
 - `--output_dir`: place every generated file and directory under one root. Defaults to
@@ -47,7 +48,7 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
   uncompressed, percentages must lie in `[0, 1]`, length bounds must be ordered, and
   every cluster TSV row must hold exactly two non-empty fields.
 - A time-throttled heartbeat, logged every 60 s during a database pass.
-- `pytest` suite (31 tests) over real 50,000- and 26,949-sequence fixtures, and
+- `pytest` suite (32 tests) over real 50,000- and 26,949-sequence fixtures, and
   `pre-commit` with `ruff`.
 
 ### Changed
@@ -110,6 +111,18 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
 - **The exit-branch `hmmsearch` was redundant.** It re-ran the search the preceding
   round had just performed with the identical HMM, differing only in a post-filter. Its
   hit records are cached and re-filtered, saving one full database pass per family.
+- **The exported HMM did not match the model that built the family.** In the
+  `family_iteration > 3` exit path the legacy loop ran round 3's redundancy trim and
+  kept its result as the seed MSA, then left the loop without ever building a model
+  from it. The family's hits and full MSA came from round 3's model (built from round
+  2's seed), while the HMM, RF line and seed MSA written to disk came from that trim's
+  output — an alignment nothing had ever searched with. The trim now runs only when a
+  further `hmmbuild` will consume it, so on both exit paths the seed MSA, the HMM and
+  the full MSA describe one round. This also removes round 3's `<= 2` and representative
+  length checks, which no longer gate anything; `finish` re-checks the length on the full
+  MSA. On the `mgnifams_v2` fixture: same 12 families, same 8 converged, same members and
+  same full MSAs; the seed MSA, RF and HMM of the 4 families that exhausted three rounds
+  change, and with them their consensus in `family_metadata`.
 - **Discarded families were recorded as converged.** `converged_families` now contains
   only successful family ids, written after membership and length checks have passed.
 - **`clip_ends()` discarded a column of every model.** It trims low-occupancy columns
@@ -133,9 +146,6 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
 Behaviour that looks wrong and is reproduced anyway, to keep the port faithful. Change
 only on purpose:
 
-- In the `family_iteration > 3` exit path the HMM written to disk (hand architecture,
-  built from round 3's seed MSA) is not the model used for the final search and
-  alignment (round 3's model, built from round 2's seed MSA).
 - `renumber_sto_msa` drops every `#=GF`, `#=GS` and `#=GR` line — including the
   `#=GF ID` that naming the seed MSA emits — and skips duplicate sequence names.
 

@@ -22,6 +22,11 @@ Three invariants shape the design, and breaking any of them reintroduces a bug:
    makes (1) affordable: `hmmsearch` uses `min(cpus, n_queries)` workers, so a single
    query per call would leave every core but one idle.
 
+4. A family's seed MSA, its HMM and its full MSA always describe the same round. The
+   redundancy trim that produces the next seed exists only to feed the next
+   `hmmbuild`, so on either exit -- convergence or `MAX_ROUNDS` -- it does not run.
+   See `Family.advance`.
+
 Family ids are the 1-based rank among *successful* families in cluster-file order, so
 nothing may be written until a family's fate is known. See `emit_family`.
 """
@@ -51,6 +56,7 @@ import pyhmmer
 import pytrimal
 
 ALPHABET = pyhmmer.easel.Alphabet.amino()
+MAX_ROUNDS = 3
 CHUNK_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
 OUTPUT_DIRECTORIES = (
     "logs",
@@ -641,7 +647,9 @@ class Family:
         if sequence_count < 2:
             self.discard("too few sequences before initial hmmbuild", sequence_count)
 
-    def advance(self, options: argparse.Namespace, indexed_sequences: IndexedSequences) -> None:
+    def advance(
+        self, options: argparse.Namespace, indexed_sequences: IndexedSequences, round_number: int
+    ) -> None:
         """Consume this round's hits and move the family to its next state.
 
         Writes nothing. Every side effect is deferred to `emit_family`, because a family
@@ -649,8 +657,16 @@ class Family:
         is still running in round 3 -- family ids depend on cluster order, not on the
         order in which families finish.
 
-        On convergence the seed MSA is deliberately left untouched, so the subsequent
-        hand build sees the alignment that produced the converged model.
+        The seed MSA the family carries out of this method is always the one that built
+        the model `finish` and `emit_family` will use. Two branches keep that true:
+
+        * On convergence the seed MSA is left untouched, so the hand build sees the
+          alignment that produced the converged model.
+        * On `MAX_ROUNDS` the whole re-align/trim tail is skipped. Its only consumer is
+          the next round's `hmmbuild`, and there is no next round. Running it anyway --
+          as the legacy script did -- left the family carrying a seed one generation
+          ahead of its own model, so the exported HMM described an alignment that was
+          never searched with, while the full MSA beside it came from the older model.
         """
         filtered_sequences = filter_hits(
             self.records,
@@ -669,6 +685,8 @@ class Family:
         if not new_recruited_sequences:
             self.state = FamilyState.CONVERGED
             self.ever_converged = True
+            return
+        if round_number == MAX_ROUNDS:
             return
 
         aligned = clip_env_ends(
@@ -693,15 +711,11 @@ class Family:
 
         No new search is performed. The exit branch's model is always the one the last
         round already searched with -- on convergence because that is the round that
-        converged, and after round 3 because the fourth pass never builds a new model --
+        converged, and after `MAX_ROUNDS` because the loop stops before another build --
         so this re-filters the cached records with `exit_flag` instead, at the cost of a
         whole database pass saved per family.
         """
         if self.state not in (FamilyState.RUNNING, FamilyState.CONVERGED):
-            return
-        sequence_count = len(self.seed_msa.names) if self.seed_msa is not None else 0
-        if sequence_count < 2:
-            self.discard("too few sequences before hand hmmbuild", sequence_count)
             return
 
         filtered_sequences = filter_hits(
@@ -800,6 +814,9 @@ def emit_family(
     family_name = f"{chunk}_{provisional_id}"
     seed_msa = cast(pyhmmer.easel.DigitalMSA, family.seed_msa)
     full_msa = cast(pyhmmer.easel.TextMSA, family.full_msa)
+    # No size guard: round 1 can never converge, so every seed reaching here came from a
+    # `run_pytrimal_reps` that passed `advance`'s `<= 2` check and `hmmbuild` cannot hit
+    # eslEMEM. A guard would have to record a discard, and discards are results.
     final_hmm = run_hmmbuild(seed_msa, family_name, hand=True)
     final_hmm.name = family_name
     # Builder stamps DATE from the wall clock and COM from sys.argv. Both are serialised
@@ -1016,7 +1033,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                     for family in active:
                         family.initialise(indexed_sequences, options.cpus)
 
-                    for round_number in (1, 2, 3):
+                    for round_number in range(1, MAX_ROUNDS + 1):
                         running = [
                             family for family in active if family.state is FamilyState.RUNNING
                         ]
@@ -1042,7 +1059,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                                 family.hmm = hmm
                                 family.qlen = hits.query.M
                                 family.records = extract_records(hits)
-                                family.advance(options, indexed_sequences)
+                                family.advance(options, indexed_sequences, round_number)
 
                     for family in active:
                         family.finish(options, indexed_sequences)
