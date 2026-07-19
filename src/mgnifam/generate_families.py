@@ -499,110 +499,65 @@ def check_seed_membership(
     return len(original_first_parts & filtered_first_parts) / len(originals)
 
 
-def parse_protein_name(
-    seq_name: str,
-    seq_length: int,
-    seq_whole_name: str,
-    original_length: int,
-    start: int,
-    end: int,
-) -> str:
-    splits = seq_name.split("_")
-    if (end - start) == original_length:
-        if len(splits) == 3:
-            seq_name = f"{splits[0]}/{splits[1]}-{splits[2]}"
-        return seq_name
+def parse_protein_name(row_name: str, aligned_row: str, indexed_sequences: IndexedSequences) -> str:
+    """Rename one alignment row to `<protein>/<start>-<end>` on the parent protein.
 
-    old_length = len(seq_whole_name)
-    if len(splits) == 3:
-        new_start = start + int(splits[1])
-        new_end = new_start + seq_length - 1
-        new_name = f"{splits[0]}/{new_start}-{new_end}"
+    Database records are themselves slices of a protein, named `<protein>_<start>_<end>`
+    with 1-based inclusive bounds. `mask_sequence` clips a record further to a hit
+    envelope and appends `/<env_from>_<env_to>`, relative to the record. Column trimming
+    (`clip_env_ends`, `clip_ends`, `run_pytrimal_reps`) then drops residues from either
+    end of the row, by a different amount per row, so the row's offset within its record
+    can only be recovered by locating its residues.
+
+    The envelope bounds the search. Locating the residues in the whole record -- what the
+    legacy script did -- returns the first match, so two identical repeat domains of one
+    protein resolved to the same name and one of them was dropped as a duplicate.
+    """
+    record_name, _, envelope = row_name.partition("/")
+    record = cast(Sequence, indexed_sequences.get(record_name)).seq
+    residues = re.sub(r"[.\-~]", "", aligned_row).upper()
+
+    if envelope:
+        env_from, env_to = (int(bound) for bound in envelope.split("_"))
     else:
-        new_name = f"{splits[0]}/{start + 1}-{end}"
-    if len(new_name) < old_length:
-        new_name = new_name.ljust(old_length)
-    elif len(new_name) > old_length:
-        new_name = new_name.rstrip()
-        if len(new_name) > old_length:
-            new_name = new_name[:old_length]
-        else:
-            new_name = new_name.ljust(old_length)
-    return new_name
+        env_from, env_to = 1, len(record)
+    offset = record.find(residues, env_from - 1, env_to)
+    if offset < 0:
+        raise ValueError(f"{row_name}: aligned residues are not in its envelope of {record_name}")
+
+    splits = record_name.split("_")
+    if len(splits) != 3:
+        # A name without slice bounds is a whole protein. When the row spans all of it the
+        # legacy script emitted the bare accession, which `family_metadata` records as
+        # region "-"; that convention is downstream-visible, so it is kept.
+        if len(residues) == len(record):
+            return record_name
+        return f"{splits[0]}/{offset + 1}-{offset + len(residues)}"
+    start = offset + int(splits[1])
+    return f"{splits[0]}/{start}-{start + len(residues) - 1}"
 
 
-def renumber_sto_msa(
-    in_sto_file: str | os.PathLike[str],
-    output: IO[str],
-    indexed_sequences: IndexedSequences,
-    *,
-    # Passing family_file switches on metadata emission, which then requires every
-    # other metadata argument.
-    family_file: IO[str] | None = None,
-    metadata_file: IO[str] | None = None,
-    representatives_file: IO[str] | None = None,
-    iteration: int | None = None,
-    chunk_num: str | None = None,
-    full_msa_num_seqs: int | None = None,
-    consensus: str | None = None,
-    converged: bool | None = None,
-) -> None:
-    write_metadata = family_file is not None
-    if write_metadata and (
-        metadata_file is None
-        or representatives_file is None
-        or iteration is None
-        or chunk_num is None
-    ):
-        raise ValueError("metadata output requires all metadata handles and identifiers")
+def renumber_msa(
+    msa: pyhmmer.easel.TextMSA, family_name: str, indexed_sequences: IndexedSequences
+) -> pyhmmer.easel.TextMSA:
+    """Return a copy of `msa` whose rows are named in parent-protein coordinates.
 
-    representative = True
-    # Some alignments contain the same sequence twice; legacy kept the first occurrence.
-    seen_sequence_names: set[str] = set()
-    with Path(in_sto_file).open(encoding="utf-8") as infile:
-        for line in infile:
-            split_line = line.split()
-            if not split_line:
-                continue
-            if split_line[0] == "//" or split_line[1] == "RF":
-                output.write(line)
-            elif split_line[1] == "STOCKHOLM":
-                output.write(f"{line}\n")
-            # Every #=GF/#=GS/#=GR line is dropped, including the "#=GF ID" that naming
-            # the seed MSA emits, because legacy dropped them. The family name is not
-            # lost: it reaches the output as the HMM's NAME field.
-            elif split_line[0] not in ["#=GF", "#=GS", "#=GC", "#=GR"]:
-                raw_sequence_name = split_line[0].split("/")[0]
-                sequence = re.sub(r"[.\-~]", "", split_line[1]).upper()
-                original = cast(Sequence, indexed_sequences.get(raw_sequence_name)).seq
-                start = original.find(sequence)
-                end = start + len(sequence)
-                sequence_name = parse_protein_name(
-                    raw_sequence_name,
-                    len(sequence),
-                    split_line[0],
-                    len(original),
-                    start,
-                    end,
-                )
-                if sequence_name.strip() in seen_sequence_names:
-                    continue
-                seen_sequence_names.add(sequence_name.strip())
-                output.write(line.replace(split_line[0], sequence_name, 1))
-
-                if write_metadata:
-                    cast(IO[str], family_file).write(f"{iteration}\t{sequence_name}\n")
-                    if representative:
-                        splits = sequence_name.split("/")
-                        region = splits[1].strip() if "/" in sequence_name else "-"
-                        cast(IO[str], metadata_file).write(
-                            f'{iteration},{full_msa_num_seqs},"{splits[0]}",{region},'
-                            f"{len(sequence)},{sequence},{consensus},{converged}\n"
-                        )
-                        cast(IO[str], representatives_file).write(
-                            f">{sequence_name.strip()}\t{chunk_num}_{iteration}\n{sequence}\n"
-                        )
-                        representative = False
+    Rebuilt rather than renamed in place: `MSA.names` is read-only and `.sequences` hands
+    back copies, so assigning to a row's name is silently discarded. Rebuilding also drops
+    hmmalign's `#=GR PP` and `#=GC PP_cons` annotation, which would otherwise double the
+    size of every stored full MSA.
+    """
+    renumbered = pyhmmer.easel.TextMSA(
+        name=family_name.encode(),
+        sequences=[
+            pyhmmer.easel.TextSequence(
+                name=parse_protein_name(name, row, indexed_sequences), sequence=row
+            )
+            for name, row in zip(msa.names, msa.alignment, strict=True)
+        ],
+    )
+    renumbered.reference = msa.reference
+    return renumbered
 
 
 class FamilyState(Enum):
@@ -791,7 +746,6 @@ def emit_family(
     success_count: int,
     chunk: str,
     writers: Writers,
-    temporary_directory: Path,
 ) -> int:
     """Write a finished family's artifacts and return the new successful-family count.
 
@@ -832,29 +786,33 @@ def emit_family(
     with deterministic_gzip_binary(writers.root / "hmm" / f"{family_name}.hmm.gz") as handle:
         final_hmm.write(handle)
 
-    seed_temporary = temporary_directory / "seed_msa.sto"
-    full_temporary = temporary_directory / "full_msa.sto"
-    with seed_temporary.open("wb") as handle:
-        seed_msa.write(handle, format="pfam")
-    with full_temporary.open("wb") as handle:
-        full_msa.write(handle, format="pfam")
+    indexed = cast(IndexedSequences, writers.indexed)
+    renumbered_seed = renumber_msa(seed_msa.textize(), family_name, indexed)
+    renumbered_full = renumber_msa(full_msa, family_name, indexed)
+    for directory, msa in (
+        ("seed_msa_sto", renumbered_seed),
+        ("full_msa_sto", renumbered_full),
+    ):
+        path = writers.root / directory / f"{family_name}.sto.gz"
+        with deterministic_gzip_binary(path) as handle:
+            msa.write(handle, format="pfam")
 
-    with deterministic_gzip_text(writers.root / "seed_msa_sto" / f"{family_name}.sto.gz") as output:
-        renumber_sto_msa(seed_temporary, output, cast(IndexedSequences, writers.indexed))
-    with deterministic_gzip_text(writers.root / "full_msa_sto" / f"{family_name}.sto.gz") as output:
-        renumber_sto_msa(
-            full_temporary,
-            output,
-            cast(IndexedSequences, writers.indexed),
-            family_file=writers.refined_families,
-            metadata_file=writers.family_metadata,
-            representatives_file=writers.family_representatives,
-            iteration=provisional_id,
-            chunk_num=chunk,
-            full_msa_num_seqs=family.full_msa_num_seqs,
-            consensus=final_hmm.consensus,
-            converged=family.ever_converged,
-        )
+    for row_number, (name, row) in enumerate(
+        zip(renumbered_full.names, renumbered_full.alignment, strict=True)
+    ):
+        sequence_name = name.decode() if isinstance(name, bytes) else name
+        writers.refined_families.write(f"{provisional_id}\t{sequence_name}\n")
+        if row_number == 0:
+            # Row 0 is the representative: hits arrive in HMMER's ranking order.
+            residues = re.sub(r"[.\-~]", "", row).upper()
+            protein, _, region = sequence_name.partition("/")
+            writers.family_metadata.write(
+                f'{provisional_id},{family.full_msa_num_seqs},"{protein}",{region or "-"},'
+                f"{len(residues)},{residues},{final_hmm.consensus},{family.ever_converged}\n"
+            )
+            writers.family_representatives.write(
+                f">{sequence_name}\t{chunk}_{provisional_id}\n{residues}\n"
+            )
     return provisional_id
 
 
@@ -1024,53 +982,43 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                 ),
             )
             success_count = 0
-            with tempfile.TemporaryDirectory() as temporary:
-                temporary_directory = Path(temporary)
-                for batch_number, batch in enumerate(
-                    itertools.batched(clusters.items(), options.batch_size), 1
-                ):
-                    active = [Family(representative, members) for representative, members in batch]
-                    for family in active:
-                        family.initialise(indexed_sequences, options.cpus)
+            for batch_number, batch in enumerate(
+                itertools.batched(clusters.items(), options.batch_size), 1
+            ):
+                active = [Family(representative, members) for representative, members in batch]
+                for family in active:
+                    family.initialise(indexed_sequences, options.cpus)
 
-                    for round_number in range(1, MAX_ROUNDS + 1):
-                        running = [
-                            family for family in active if family.state is FamilyState.RUNNING
-                        ]
-                        if not running:
-                            break
-                        hmms = [
-                            run_hmmbuild(
-                                cast(pyhmmer.easel.DigitalMSA, family.seed_msa),
-                                f"pending_{batch_number}_{round_number}_{index}",
-                            )
-                            for index, family in enumerate(running)
-                        ]
-                        with search(
-                            hmms,
-                            targets,
-                            cpus=options.cpus,
-                            evalue=options.recruit_evalue_cutoff,
-                            logger=logger,
-                            batch_number=batch_number,
-                            round_number=round_number,
-                        ) as searched:
-                            for family, hmm, hits in zip(running, hmms, searched, strict=True):
-                                family.hmm = hmm
-                                family.qlen = hits.query.M
-                                family.records = extract_records(hits)
-                                family.advance(options, indexed_sequences, round_number)
-
-                    for family in active:
-                        family.finish(options, indexed_sequences)
-                    for family in active:
-                        success_count = emit_family(
-                            family,
-                            success_count,
-                            options.chunk_num,
-                            writers,
-                            temporary_directory,
+                for round_number in range(1, MAX_ROUNDS + 1):
+                    running = [family for family in active if family.state is FamilyState.RUNNING]
+                    if not running:
+                        break
+                    hmms = [
+                        run_hmmbuild(
+                            cast(pyhmmer.easel.DigitalMSA, family.seed_msa),
+                            f"pending_{batch_number}_{round_number}_{index}",
                         )
+                        for index, family in enumerate(running)
+                    ]
+                    with search(
+                        hmms,
+                        targets,
+                        cpus=options.cpus,
+                        evalue=options.recruit_evalue_cutoff,
+                        logger=logger,
+                        batch_number=batch_number,
+                        round_number=round_number,
+                    ) as searched:
+                        for family, hmm, hits in zip(running, hmms, searched, strict=True):
+                            family.hmm = hmm
+                            family.qlen = hits.query.M
+                            family.records = extract_records(hits)
+                            family.advance(options, indexed_sequences, round_number)
+
+                for family in active:
+                    family.finish(options, indexed_sequences)
+                for family in active:
+                    success_count = emit_family(family, success_count, options.chunk_num, writers)
         logger.info("DONE.")
     finally:
         for handler in logger.handlers:

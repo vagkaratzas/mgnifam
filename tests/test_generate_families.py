@@ -218,6 +218,34 @@ class FakeSequences:
         return gf.Sequence(name, self.sequences[name])
 
 
+def test_parse_protein_name_resolves_repeats_within_their_envelope() -> None:
+    """Two identical repeat domains of one protein must renumber to different regions.
+
+    The legacy script located a row's residues in the whole record, so `str.find` returned
+    the first copy for both domains, they collided on one name and one was dropped as a
+    duplicate. Searching within the row's own envelope keeps them apart.
+    """
+    repeat = "MKVLAAGIVG"
+    store = FakeSequences({"prot_101_140": f"{repeat}QQQQQ{repeat}QQQQQ"})
+
+    first = gf.parse_protein_name("prot_101_140/1_10", repeat, store)
+    second = gf.parse_protein_name("prot_101_140/16_25", repeat, store)
+
+    assert (first, second) == ("prot/101-110", "prot/116-125")
+
+    # Gap characters are stripped, and a row shorter than its record still gets coordinates
+    # -- legacy truncated this name to the bare accession to fit the old name column.
+    assert gf.parse_protein_name("prot_101_140", f"-{repeat[1:]}...QQQQQ", store) == "prot/102-115"
+
+    # A row spanning the whole of an unsliced record keeps the bare accession, which
+    # `family_metadata` records as region "-".
+    whole = FakeSequences({"prot": repeat})
+    assert gf.parse_protein_name("prot", repeat, whole) == "prot"
+
+    with pytest.raises(ValueError, match="not in its envelope"):
+        gf.parse_protein_name("prot_101_140/1_10", "WWWWWWWWWW", store)
+
+
 def test_filter_hits_exit_filter_and_native_order() -> None:
     records = [("b", 10, 2, 4), ("a", 10, 1, 10), ("b", 10, 5, 10)]
     store = FakeSequences({"a": "A" * 10, "b": "B" * 10})
@@ -310,7 +338,7 @@ def test_converged_discard_is_not_recorded(tmp_path: Path, monkeypatch: pytest.M
         family_metadata=io.StringIO(),
         family_representatives=io.StringIO(),
     )
-    success_count = gf.emit_family(family, 0, "chunk", writers, tmp_path)
+    success_count = gf.emit_family(family, 0, "chunk", writers)
     assert success_count == 0
     assert writers.converged_families.getvalue() == ""
 
@@ -323,7 +351,7 @@ def test_converged_discard_is_not_recorded(tmp_path: Path, monkeypatch: pytest.M
         full_msa_num_seqs=2,
         ever_converged=True,
     )
-    success_count = gf.emit_family(successful, success_count, "chunk", writers, tmp_path)
+    success_count = gf.emit_family(successful, success_count, "chunk", writers)
     assert success_count == 1
     assert successful.family_id == 1
     assert writers.converged_families.getvalue() == "1\n"
@@ -686,16 +714,21 @@ def test_declared_outputs_parse_and_long_fixture_runs(
         assert hmm is not None
         # The family name lives on the HMM, not in the Stockholm files.
         assert hmm.name == path.name.removesuffix(".hmm.gz")
-    for path in (baseline_output / "seed_msa_sto").glob("*.sto.gz"):
-        contents = gzip.decompress(path.read_bytes())
-        # Legacy's renumber_sto_msa strips every #=GF line; so must ours.
-        assert b"#=GF" not in contents
-        assert contents.startswith(b"# STOCKHOLM 1.0")
-        with pyhmmer.easel.MSAFile(path, digital=False) as msa_file:
-            assert msa_file.read() is not None
-    for path in (baseline_output / "full_msa_sto").glob("*.sto.gz"):
-        with pyhmmer.easel.MSAFile(path, digital=False) as msa_file:
-            assert msa_file.read() is not None
+    for directory in ("seed_msa_sto", "full_msa_sto"):
+        for path in (baseline_output / directory).glob("*.sto.gz"):
+            family_name = path.name.removesuffix(".sto.gz")
+            contents = gzip.decompress(path.read_bytes())
+            assert contents.startswith(b"# STOCKHOLM 1.0")
+            # The family names itself, and carries no hmmalign posterior annotation.
+            assert f"#=GF ID {family_name}".encode() in contents
+            assert b"#=GR" not in contents
+            assert b"PP_cons" not in contents
+            with pyhmmer.easel.MSAFile(path, digital=False) as msa_file:
+                msa = msa_file.read()
+            assert msa is not None
+            # Every row is renumbered onto its parent protein, with no padding left over.
+            for name in msa.names:
+                assert name == name.strip()
     assert len((baseline_output / "family_metadata" / "chunk.csv").read_text().splitlines()) == 3
 
     long_output = run_pipeline(

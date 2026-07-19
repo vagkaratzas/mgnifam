@@ -140,14 +140,35 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
   count, representatives and membership are unaffected.
 - Output file handles were left unclosed, and `discard_value = 0.0` was re-initialised
   at four call sites.
+- **Renumbering truncated coordinates and could drop rows.** `renumber_sto_msa` re-read
+  the Stockholm file it had just written and rewrote each name by string replacement, so
+  the new name had to fit the old name's column width; a name that grew was cut to
+  length. On the `mgnifams_v2` fixture that shipped `4454641265/11-11` for a region that
+  ends at 110, and `909822872` for a region that is `909822872/1-112` — the coordinates
+  were eaten outright. The padding also leaked into `refined_families`, whose every row
+  carried trailing spaces.
 
-### Preserved deliberately
+  Renaming now happens on the MSA object before it is written, so pyhmmer sizes the name
+  column and no name is ever trimmed. `parse_protein_name` takes a row and its alignment
+  instead of six positional integers, and `renumber_sto_msa` is gone along with the two
+  temporary files per family.
+- **Repeat domains collided and one was silently dropped.** A row's position in its
+  record was recovered with `str.find` over the whole record, which returns the first
+  match, so two identical repeat domains of one protein resolved to the same name and the
+  second was skipped as a duplicate. The search is now bounded by the row's own envelope,
+  which its name already carries, so the domains stay distinct and the duplicate skip has
+  been removed. Residues that are not in their envelope raise instead of silently
+  renumbering from `find`'s `-1`.
+- **Stockholm output was anonymous and carried hmmalign's posteriors.** Every `#=GF`,
+  `#=GS` and `#=GR` line was dropped, including the `#=GF ID`. Building the output from
+  the MSA object restores `#=GF ID <family>` in both the seed and full alignments, and
+  drops `#=GR PP`/`#=GC PP_cons` by construction rather than by line filtering.
 
-Behaviour that looks wrong and is reproduced anyway, to keep the port faithful. Change
-only on purpose:
-
-- `renumber_sto_msa` drops every `#=GF`, `#=GS` and `#=GR` line — including the
-  `#=GF ID` that naming the seed MSA emits — and skips duplicate sequence names.
+  Across the `mgnifams_v2` fixture these change no membership: the same 12 families, the
+  same 405 rows, and byte-identical `hmm`, `rf`, `family_metadata`, `family_reps`,
+  `converged_families`, `successful_clusters` and `discarded_clusters`. The alignments
+  gain their `#=GF ID`, lose the padded name column, and correct the two truncated names
+  above.
 
 ## [0.1.0] - legacy
 
