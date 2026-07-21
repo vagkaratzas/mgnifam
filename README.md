@@ -78,19 +78,26 @@ uv run mgnifam generate_families --fasta_index db.fa.ssi ...
 
 Written under `--output_dir` (default: `output`), keyed by `--chunk_num`:
 
-| directory | contents |
+One file per family, so one directory each:
+
+| path | contents |
 |---|---|
-| `seed_msa_sto/` | `<chunk>_<id>.sto.gz` — seed alignment |
-| `full_msa_sto/` | `<chunk>_<id>.sto.gz` — full alignment |
-| `hmm/` | `<chunk>_<id>.hmm.gz` — the family model |
-| `rf/` | `<chunk>_<id>.txt` — reference-annotation line |
-| `family_reps/` | `<chunk>.fasta.gz` — one representative per family |
-| `refined_families/` | `<chunk>.tsv` — `family_id<TAB>sequence` |
-| `family_metadata/` | `<chunk>.csv` |
-| `successful_clusters/` | `<chunk>.txt` |
-| `discarded_clusters/` | `<chunk>.csv` — `representative,reason,value` |
-| `converged_families/` | `<chunk>.txt` — ids of successful families that converged naturally |
-| `logs/` | `<chunk>.txt` |
+| `seed_msa/<chunk>_<id>.sto.gz` | seed alignment |
+| `full_msa/<chunk>_<id>.sto.gz` | full alignment |
+| `hmm/<chunk>_<id>.hmm.gz` | the family model |
+| `rf/<chunk>_<id>.txt` | reference-annotation line |
+
+One file per chunk, so flat in the output root:
+
+| path | contents |
+|---|---|
+| `<chunk>_reps.fasta.gz` | one representative per family |
+| `<chunk>_families.tsv` | `family_id<TAB>sequence` |
+| `<chunk>_metadata.csv` | one row per family |
+| `<chunk>_successful.txt` | representatives that produced a family |
+| `<chunk>_discarded.csv` | `representative,reason,value` |
+| `<chunk>_converged.txt` | ids of successful families that converged naturally |
+| `<chunk>.log` | run log |
 
 Family ids are a 1-based rank among *successful* families, in cluster-file order.
 

@@ -86,12 +86,11 @@ def run_pipeline(directory: Path, arguments: list[str]) -> Path:
 
 def scientific_artifacts(directory: Path) -> dict[str, bytes]:
     artifacts = {}
-    for output_directory in gf.OUTPUT_DIRECTORIES:
-        if output_directory == "logs":
+    for path in sorted(directory.glob("**/*")):
+        # Logs carry timestamps and the SSI index is an input cache: neither is a result.
+        if not path.is_file() or path.suffix in (".log", ".ssi"):
             continue
-        for path in sorted((directory / output_directory).glob("**/*")):
-            if path.is_file():
-                artifacts[str(path.relative_to(directory))] = path.read_bytes()
+        artifacts[str(path.relative_to(directory))] = path.read_bytes()
     return artifacts
 
 
@@ -326,7 +325,7 @@ def test_converged_discard_is_not_recorded(tmp_path: Path, monkeypatch: pytest.M
     assert family.state is gf.FamilyState.DISCARDED
     assert family.ever_converged
 
-    for directory in ("rf", "hmm", "seed_msa_sto", "full_msa_sto"):
+    for directory in gf.FAMILY_DIRECTORIES:
         (tmp_path / directory).mkdir()
     writers = gf.Writers(
         root=tmp_path,
@@ -374,12 +373,12 @@ def test_cpus_and_sanity_anchors(
         ),
     )
     assert scientific_artifacts(cpus_four) == scientific_artifacts(baseline_output)
-    assert (baseline_output / "successful_clusters" / "chunk.txt").read_text().splitlines() == [
+    assert (baseline_output / "chunk_successful.txt").read_text().splitlines() == [
         "4706047775",
         "1622851798_832_939",
         "4497037939_1_144",
     ]
-    metadata = (baseline_output / "family_metadata" / "chunk.csv").read_text().splitlines()
+    metadata = (baseline_output / "chunk_metadata.csv").read_text().splitlines()
     assert [line.split(",")[2].strip('"') for line in metadata] == [
         "782510898",
         "5761513631",
@@ -387,7 +386,7 @@ def test_cpus_and_sanity_anchors(
     ]
     # Families 2 and 3 recruit nothing new on their second pass. Family 3 only started
     # converging once clip_ends stopped discarding a column of its model (CHANGELOG 1.0.0).
-    assert (baseline_output / "converged_families" / "chunk.txt").read_text() == "2\n3\n"
+    assert (baseline_output / "chunk_converged.txt").read_text() == "2\n3\n"
     # One representative per successful family, and ids are contiguous from 1.
     assert [line.split(",")[0] for line in metadata] == ["1", "2", "3"]
 
@@ -414,7 +413,7 @@ def test_batch_size_invariance(
     for output in outputs:
         mapping = [
             (line.split(",")[2], line.split(",", 1)[0])
-            for line in (output / "family_metadata" / "chunk.csv").read_text().splitlines()
+            for line in (output / "chunk_metadata.csv").read_text().splitlines()
         ]
         assert mapping == [('"782510898"', "1"), ('"5761513631"', "2"), ('"1446399400"', "3")]
 
@@ -466,7 +465,7 @@ def test_rerun_removes_stale_family_artifacts(
         "\n".join((fixture_directory / "clustering.tsv").read_text().splitlines()[:9]) + "\n"
     )
     run_pipeline(run_directory, cli_args(reduced_clusters, small_fasta, fasta_index=shared_index))
-    for directory in ("seed_msa_sto", "full_msa_sto", "hmm", "rf"):
+    for directory in gf.FAMILY_DIRECTORIES:
         assert all(
             "chunk_2." not in path.name and "chunk_3." not in path.name
             for path in (output / directory).iterdir()
@@ -706,15 +705,25 @@ def test_declared_outputs_parse_and_long_fixture_runs(
     fixture_directory: Path,
     extra_fasta: Path,
 ) -> None:
-    for directory in gf.OUTPUT_DIRECTORIES:
+    for directory in gf.FAMILY_DIRECTORIES:
         assert (baseline_output / directory).is_dir()
+    for name in (
+        "chunk.log",
+        "chunk_families.tsv",
+        "chunk_discarded.csv",
+        "chunk_successful.txt",
+        "chunk_converged.txt",
+        "chunk_metadata.csv",
+        "chunk_reps.fasta.gz",
+    ):
+        assert (baseline_output / name).is_file()
     for path in (baseline_output / "hmm").glob("*.hmm.gz"):
         with pyhmmer.plan7.HMMFile(path) as hmm_file:
             hmm = hmm_file.read()
         assert hmm is not None
         # The family name lives on the HMM, not in the Stockholm files.
         assert hmm.name == path.name.removesuffix(".hmm.gz")
-    for directory in ("seed_msa_sto", "full_msa_sto"):
+    for directory in ("seed_msa", "full_msa"):
         for path in (baseline_output / directory).glob("*.sto.gz"):
             family_name = path.name.removesuffix(".sto.gz")
             contents = gzip.decompress(path.read_bytes())
@@ -729,13 +738,13 @@ def test_declared_outputs_parse_and_long_fixture_runs(
             # Every row is renumbered onto its parent protein, with no padding left over.
             for name in msa.names:
                 assert name == name.strip()
-    assert len((baseline_output / "family_metadata" / "chunk.csv").read_text().splitlines()) == 3
+    assert len((baseline_output / "chunk_metadata.csv").read_text().splitlines()) == 3
 
     long_output = run_pipeline(
         tmp_path / "long",
         cli_args(fixture_directory / "cluster_long.tsv", extra_fasta, chunk="long"),
     )
-    assert (long_output / "successful_clusters" / "long.txt").read_text().strip()
+    assert (long_output / "long_successful.txt").read_text().strip()
     assert (long_output / f"{extra_fasta.name}.ssi").is_file()
 
 
@@ -757,9 +766,9 @@ def test_v2_full_tsv_end_to_end(
     v2_output: Path,
 ) -> None:
     representatives = list(gf.load_clusters(fixture_directory / "mgnifams_v2.tsv"))
-    discarded = (v2_output / "discarded_clusters" / "v2.csv").read_text().splitlines()
+    discarded = (v2_output / "v2_discarded.csv").read_text().splitlines()
     discarded_representatives = {line.split(",", 1)[0] for line in discarded}
-    successful = (v2_output / "successful_clusters" / "v2.txt").read_text().splitlines()
+    successful = (v2_output / "v2_successful.txt").read_text().splitlines()
 
     assert discarded == [
         "3466270235_168_276,family representative length too small,86",
@@ -770,14 +779,14 @@ def test_v2_full_tsv_end_to_end(
         for representative in representatives
         if representative not in discarded_representatives
     ]
-    assert (v2_output / "converged_families" / "v2.txt").read_text().splitlines() == [
+    assert (v2_output / "v2_converged.txt").read_text().splitlines() == [
         str(family_id) for family_id in range(5, 13)
     ]
 
-    metadata = (v2_output / "family_metadata" / "v2.csv").read_text().splitlines()
+    metadata = (v2_output / "v2_metadata.csv").read_text().splitlines()
     assert [line.split(",", 1)[0] for line in metadata] == [str(i) for i in range(1, 13)]
-    assert len((v2_output / "refined_families" / "v2.tsv").read_text().splitlines()) == 405
-    for directory in ("hmm", "seed_msa_sto", "full_msa_sto", "rf"):
+    assert len((v2_output / "v2_families.tsv").read_text().splitlines()) == 405
+    for directory in gf.FAMILY_DIRECTORIES:
         assert len(list((v2_output / directory).iterdir())) == 12
     assert (v2_output / f"{v2_fasta.name}.ssi").is_file()
 
@@ -797,7 +806,7 @@ def test_output_dir_override(
     with contextlib.chdir(run_directory):
         gf.main([*arguments, "--output_dir", str(output)])
 
-    assert all((output / directory).is_dir() for directory in gf.OUTPUT_DIRECTORIES)
+    assert all((output / directory).is_dir() for directory in gf.FAMILY_DIRECTORIES)
     assert not (run_directory / "output").exists()
 
 

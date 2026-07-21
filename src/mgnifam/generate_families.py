@@ -58,19 +58,9 @@ import pytrimal
 ALPHABET = pyhmmer.easel.Alphabet.amino()
 MAX_ROUNDS = 3
 CHUNK_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
-OUTPUT_DIRECTORIES = (
-    "logs",
-    "refined_families",
-    "discarded_clusters",
-    "successful_clusters",
-    "converged_families",
-    "family_metadata",
-    "family_reps",
-    "seed_msa_sto",
-    "full_msa_sto",
-    "hmm",
-    "rf",
-)
+# Per-family artifacts: one file per family, so they get a directory each. Everything
+# else is a single file per chunk and lives flat in the output root as `<chunk>_*`.
+FAMILY_DIRECTORIES = ("seed_msa", "full_msa", "hmm", "rf")
 
 
 class DuplicateSequenceName(ValueError):
@@ -790,8 +780,8 @@ def emit_family(
     renumbered_seed = renumber_msa(seed_msa.textize(), family_name, indexed)
     renumbered_full = renumber_msa(full_msa, family_name, indexed)
     for directory, msa in (
-        ("seed_msa_sto", renumbered_seed),
-        ("full_msa_sto", renumbered_full),
+        ("seed_msa", renumbered_seed),
+        ("full_msa", renumbered_full),
     ):
         path = writers.root / directory / f"{family_name}.sto.gz"
         with deterministic_gzip_binary(path) as handle:
@@ -902,12 +892,12 @@ def prepare_output_directories(root: Path, chunk: str) -> None:
     Without the clearing step, a rerun that produces fewer families leaves the surplus
     behind and the directory mixes two runs.
     """
-    for directory in OUTPUT_DIRECTORIES:
+    for directory in FAMILY_DIRECTORIES:
         (root / directory).mkdir(parents=True, exist_ok=True)
     # An exact numeric suffix, not a `<chunk>_*` glob: chunk "foo" would otherwise
     # delete "foo_bar_1", which belongs to chunk "foo_bar".
     artifact_pattern = re.compile(rf"{re.escape(chunk)}_\d+\..*")
-    for directory in ("seed_msa_sto", "full_msa_sto", "hmm", "rf"):
+    for directory in FAMILY_DIRECTORIES:
         for path in (root / directory).iterdir():
             if path.is_file() and artifact_pattern.fullmatch(path.name):
                 path.unlink()
@@ -945,7 +935,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
     root = options.output_dir
     prepare_output_directories(root, options.chunk_num)
     index_path = resolve_index(options, root)
-    logger = configure_logger(root / "logs" / f"{options.chunk_num}.txt")
+    logger = configure_logger(root / f"{options.chunk_num}.log")
 
     try:
         with contextlib.ExitStack() as stack:
@@ -963,22 +953,22 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                 root=root,
                 indexed=indexed_sequences,
                 refined_families=stack.enter_context(
-                    (root / "refined_families" / f"{options.chunk_num}.tsv").open("w")
+                    (root / f"{options.chunk_num}_families.tsv").open("w")
                 ),
                 discarded_clusters=stack.enter_context(
-                    (root / "discarded_clusters" / f"{options.chunk_num}.csv").open("w")
+                    (root / f"{options.chunk_num}_discarded.csv").open("w")
                 ),
                 successful_clusters=stack.enter_context(
-                    (root / "successful_clusters" / f"{options.chunk_num}.txt").open("w")
+                    (root / f"{options.chunk_num}_successful.txt").open("w")
                 ),
                 converged_families=stack.enter_context(
-                    (root / "converged_families" / f"{options.chunk_num}.txt").open("w")
+                    (root / f"{options.chunk_num}_converged.txt").open("w")
                 ),
                 family_metadata=stack.enter_context(
-                    (root / "family_metadata" / f"{options.chunk_num}.csv").open("w")
+                    (root / f"{options.chunk_num}_metadata.csv").open("w")
                 ),
                 family_representatives=stack.enter_context(
-                    deterministic_gzip_text(root / "family_reps" / f"{options.chunk_num}.fasta.gz")
+                    deterministic_gzip_text(root / f"{options.chunk_num}_reps.fasta.gz")
                 ),
             )
             success_count = 0

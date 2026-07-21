@@ -41,8 +41,8 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
 - `--batch_size`: how many families are searched per `hmmsearch` wave. Defaults to
   `2 * cpus` and must stay `>= cpus`, since `hmmsearch` uses `min(cpus, n_queries)`
   workers.
-- Gzip compression for the bulk outputs: `seed_msa_sto/*.sto.gz`, `full_msa_sto/*.sto.gz`,
-  `hmm/*.hmm.gz`, `family_reps/<chunk>.fasta.gz`.
+- Gzip compression for the bulk outputs: `seed_msa/*.sto.gz`, `full_msa/*.sto.gz`,
+  `hmm/*.hmm.gz`, `<chunk>_reps.fasta.gz`.
 - Input validation before any index or output directory is created: `chunk_num` must
   match `[A-Za-z0-9._-]+` (it is interpolated into output paths), the FASTA must be
   uncompressed, percentages must lie in `[0, 1]`, length bounds must be ordered, and
@@ -53,6 +53,13 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
 
 ### Changed
 
+- **Flatter output layout.** Only the per-family artifacts keep a directory
+  (`seed_msa/`, `full_msa/`, `hmm/`, `rf/`; the two MSA directories lose their `_sto`
+  suffix, the extension already says it). The seven one-file-per-chunk outputs sit flat
+  in the output root as `<chunk>_families.tsv`, `<chunk>_discarded.csv`,
+  `<chunk>_successful.txt`, `<chunk>_converged.txt`, `<chunk>_metadata.csv`,
+  `<chunk>_reps.fasta.gz` and `<chunk>.log` — a directory holding a single file was
+  never carrying information.
 - **Recruitment no longer depends on `--cpus`.** `hmmsearch` is always called with
   `parallel="queries"`. See *Fixed*.
 - The FASTA is never loaded into memory. Targets stream from a `SequenceFile`, and
