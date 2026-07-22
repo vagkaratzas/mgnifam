@@ -245,6 +245,23 @@ def test_parse_protein_name_resolves_repeats_within_their_envelope() -> None:
         gf.parse_protein_name("prot_101_140/1_10", "WWWWWWWWWW", store)
 
 
+def test_seed_membership_counts_distinct_proteins_on_both_sides() -> None:
+    """Membership is a ratio of distinct proteins, so it can never exceed 1.
+
+    Dividing by the raw row count instead let a cluster TSV that repeats a member report
+    less than full membership for a family that had in fact kept every one of them, and
+    the family was discarded as "few seed sequences remained" at the 0.9 default.
+    """
+    assert gf.check_seed_membership(["a", "b", "c"], ["a", "b", "c"]) == 1.0
+    assert gf.check_seed_membership(["a", "a", "b", "c"], ["a", "b", "c"]) == 1.0
+
+    # Envelope suffixes collapse to the parent protein on both sides.
+    assert gf.check_seed_membership(["p/1_9", "p/20_30"], ["p/1_9"]) == 1.0
+
+    # Genuine loss still measures as loss.
+    assert gf.check_seed_membership(["a", "b", "c", "d"], ["a", "b"]) == 0.5
+
+
 def test_filter_hits_exit_filter_and_native_order() -> None:
     records = [("b", 10, 2, 4), ("a", 10, 1, 10), ("b", 10, 5, 10)]
     store = FakeSequences({"a": "A" * 10, "b": "B" * 10})

@@ -483,10 +483,15 @@ def unmask_sequence_names(sequences: Iterable[Sequence]) -> list[str]:
 def check_seed_membership(
     original_sequence_names: Iterable[str], filtered_sequence_names: Iterable[str]
 ) -> float:
-    originals = list(original_sequence_names)
-    original_first_parts = set(map(extract_first_part, originals))
+    """Return the fraction of the cluster's distinct proteins still recruited.
+
+    Both sides are counted after `extract_first_part` and as sets, so the ratio cannot
+    exceed 1. Dividing by the raw row count instead would let a cluster TSV that repeats
+    a member report less than full membership for a family that kept every one of them.
+    """
+    original_first_parts = set(map(extract_first_part, original_sequence_names))
     filtered_first_parts = set(map(extract_first_part, filtered_sequence_names))
-    return len(original_first_parts & filtered_first_parts) / len(originals)
+    return len(original_first_parts & filtered_first_parts) / len(original_first_parts)
 
 
 def parse_protein_name(row_name: str, aligned_row: str, indexed_sequences: IndexedSequences) -> str:

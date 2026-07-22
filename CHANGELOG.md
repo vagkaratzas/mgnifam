@@ -193,5 +193,3 @@ port.
   `biopython==1.85`, `pyfamsa==0.6.0`, `pytrimal==0.8.2`.
 - Held the entire target FASTA in memory twice, as a `DigitalSequenceBlock` and as a
   Python `dict` of `DigitalSequence` objects.
-
-[1.0.0]: https://github.com/vagkaratzas/mgnifam/releases/tag/v1.0.0
