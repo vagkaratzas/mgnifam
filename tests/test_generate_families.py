@@ -187,6 +187,29 @@ raise SystemExit(1)
     assert result.returncode == 0
 
 
+def test_soft_masked_fasta_is_normalised_at_the_fetch_boundary(tmp_path: Path) -> None:
+    """A lower-case (soft-masked) database must not break residue location.
+
+    Lower case in a HMMER alignment marks an insert-state residue, so every row is
+    upper-cased before its residues are located in the parent record. A soft-masked
+    FASTA therefore used to fail `parse_protein_name`'s `str.find` and take the whole
+    chunk down at emit time -- after the searches had already been paid for.
+    """
+    masked = tmp_path / "masked.fa"
+    masked.write_text(">prot_101_140\nmktaylaagivgqqqqq\n")
+    index = tmp_path / "masked.ssi"
+    gf.build_ssi_index(masked, index)
+
+    with (
+        pyhmmer.easel.SSIReader(index) as reader,
+        pyhmmer.easel.SequenceFile(masked, digital=False, index=reader) as handle,
+    ):
+        sequences = gf.IndexedSequences(handle)
+        assert sequences.get("prot_101_140") == gf.Sequence("prot_101_140", "MKTAYLAAGIVGQQQQQ")
+        # The alignment row is upper case with an insert column; it must still resolve.
+        assert gf.parse_protein_name("prot_101_140", "MKTAY-laa", sequences) == "prot/101-108"
+
+
 def text_msa(names: list[str], sequences: list[str], reference: str) -> pyhmmer.easel.TextMSA:
     msa = pyhmmer.easel.TextMSA(
         sequences=[

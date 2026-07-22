@@ -194,13 +194,25 @@ class IndexedSequences:
         self.indexed = sequence_file.indexed
 
     def get(self, name: str, *, missing_ok: bool = False) -> Sequence | None:
+        """Fetch a database record, upper-cased.
+
+        Soft-masked (lower-case) input would otherwise reach `parse_protein_name`, whose
+        `str.find` compares against an alignment row that is upper-cased -- because in a
+        HMMER alignment lower case marks an insert-state residue, not a masked one. The
+        search failed and took the whole chunk down at emit time.
+
+        Normalising here rather than at that comparison keeps one form in circulation:
+        every consumer of a database sequence goes through this method. Nothing is lost,
+        because both alignment paths digitize before writing and Easel's digital
+        alphabet has no case.
+        """
         try:
             fetched = fetch_indexed_sequence(self.indexed, name)
         except KeyError:
             if missing_ok:
                 return None
             raise
-        return Sequence(name, fetched.sequence)
+        return Sequence(name, fetched.sequence.upper())
 
 
 def run_initial_msa(
