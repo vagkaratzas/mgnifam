@@ -47,8 +47,8 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
   match `[A-Za-z0-9._-]+` (it is interpolated into output paths), the FASTA must be
   uncompressed, percentages must lie in `[0, 1]`, length bounds must be ordered, and
   every cluster TSV row must hold exactly two non-empty fields.
-- A time-throttled heartbeat, logged every 60 s during a database pass.
-- `pytest` suite (32 tests) over real 50,000- and 26,949-sequence fixtures, and
+- A time-throttled heartbeat, logged every 300 s during a database pass.
+- `pytest` suite (37 tests) over real 50,000- and 26,949-sequence fixtures, and
   `pre-commit` with `ruff`.
 
 ### Changed
@@ -80,7 +80,7 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
 - Output file handles are opened once on a `contextlib.ExitStack`; the shared
   `tmp/seed_msa.sto`, `tmp/full_msa.sto` and `execution.log` paths, which collided when
   chunks shared a working directory, are replaced by a per-invocation temporary
-  directory and a logger writing straight to `logs/<chunk>.txt`.
+  directory and a logger writing straight to `<chunk>.log` in the output root.
 - Stale `<chunk>_<n>` artifacts are cleared at start-up, so a rerun producing fewer
   families no longer leaves the surplus behind.
 - Python `>= 3.13`. Dependencies updated to `pyhmmer>=0.12.1,<0.13`,

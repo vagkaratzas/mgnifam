@@ -152,9 +152,9 @@ For the dependency set resolved in the committed `uv.lock` (install with
 `uv sync --frozen`), scientific outputs are byte-identical across repeated runs, across
 `PYTHONHASHSEED` values, across `--batch_size`, across `--prefetch_targets`, and — unlike
 the previous implementation — across `--cpus`. The contract is scoped to that lockfile:
-pyhmmer, pyfamsa and pytrimal decide hit retention, alignment and serialised bytes. (`logs/` carries timestamps and is excluded from that
-contract. HMM files omit the `DATE` and `COM` lines, which are otherwise a wall-clock
-and an `argv` dump.)
+pyhmmer, pyfamsa and pytrimal decide hit retention, alignment and serialised bytes.
+(`<chunk>.log` carries timestamps and is excluded from that contract. HMM files omit the
+`DATE` and `COM` lines, which are otherwise a wall-clock and an `argv` dump.)
 
 > **The old pipeline's recruitment depended on how many CPUs it was given.** pyhmmer
 > selects `parallel="targets"` whenever the query count is below the CPU count, which was
