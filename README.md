@@ -18,12 +18,24 @@ a standalone, tested package.
 ## Install
 
 ```bash
-uv sync
+pip install mgnifam        # or: uv tool install mgnifam
 ```
 
 Requires Python >= 3.13. Verify with `mgnifam --version`.
 
+To work on the package itself, or to reproduce published results byte-for-byte, install
+from the repository against the committed lockfile instead — see
+[Reproducibility](#reproducibility), which is scoped to that resolved dependency set:
+
+```bash
+git clone https://github.com/vagkaratzas/mgnifam && cd mgnifam
+uv sync --frozen
+```
+
 ## Usage
+
+Commands below are written `uv run mgnifam ...` for the cloned checkout. On a
+`pip install`, drop the `uv run` prefix.
 
 ```bash
 uv run mgnifam generate_families \
@@ -183,7 +195,8 @@ families, same representatives, fewer spurious members.
 `--recruit_evalue_cutoff` now means what it says, on any machine.
 
 Outputs are therefore **not** byte-compatible with the legacy script. Every difference is
-enumerated in [CHANGELOG.md](CHANGELOG.md).
+enumerated in
+[CHANGELOG.md](https://github.com/vagkaratzas/mgnifam/blob/main/CHANGELOG.md).
 
 ### Indexing a very large database
 
