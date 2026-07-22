@@ -5,11 +5,15 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-*Disclaimer*
+*Reproducibility*
 
-Byte-level reproducibility is only claimed for the dependency set resolved in the
-committed `uv.lock`. pyhmmer, pyfamsa and pytrimal determine hit retention, alignment
-and serialised bytes, so a change in any of them may change outputs.
+Repeated runs are byte-identical: same inputs, same lockfile, same outputs —
+regardless of `--cpus`, `--batch_size`, `--prefetch_targets` or `PYTHONHASHSEED`.
+
+That guarantee is scoped to the dependency set resolved in the committed `uv.lock`
+(`uv sync --frozen`). pyhmmer, pyfamsa and pytrimal decide hit retention, alignment
+and serialised bytes, so installing from PyPI — which resolves within the declared
+version ranges instead — may produce different results on a different resolution.
 
 ## [1.0.0] - 2026/07/22
 
