@@ -981,6 +981,18 @@ def main(args: SequenceCollection[str] | None = None) -> None:
     index_path = resolve_index(options, root)
     logger = configure_logger(root / f"{options.chunk_num}.log")
 
+    started = time.monotonic()
+    total_batches = -(-len(clusters) // options.batch_size)
+    logger.info(
+        "start clusters=%d batches=%d batch_size=%d cpus=%d prefetch=%s index=%s",
+        len(clusters),
+        total_batches,
+        options.batch_size,
+        options.cpus,
+        options.prefetch_targets,
+        index_path,
+    )
+
     try:
         with contextlib.ExitStack() as stack:
             index_reader = stack.enter_context(pyhmmer.easel.SSIReader(index_path))
@@ -1016,6 +1028,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                 ),
             )
             success_count = 0
+            processed = 0
             for batch_number, batch in enumerate(
                 itertools.batched(clusters.items(), options.batch_size), 1
             ):
@@ -1063,6 +1076,20 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                                 family.qlen = hits.query.M
                                 family.records = extract_records(hits)
                                 family.advance(options, indexed_sequences, round_number)
+                    # One round is one pass over the whole database, so this is the line
+                    # that tells a long run it is moving at all.
+                    logger.info(
+                        "batch=%d/%d round=%d searched=%d still_running=%d converged=%d "
+                        "discarded=%d elapsed=%.1fs",
+                        batch_number,
+                        total_batches,
+                        round_number,
+                        len(searching),
+                        sum(1 for f in active if f.state is FamilyState.RUNNING),
+                        sum(1 for f in active if f.state is FamilyState.CONVERGED),
+                        sum(1 for f in active if f.state is FamilyState.DISCARDED),
+                        time.monotonic() - started,
+                    )
 
                 for family in active:
                     with family_guard(family, logger, "the exit branch"):
@@ -1079,7 +1106,25 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                         # result: emit it. `emit_family` computes before it writes, so the
                         # failed attempt left nothing behind and this writes only the row.
                         emit_family(family, success_count, options.chunk_num, writers)
-        logger.info("DONE.")
+                processed += len(active)
+                # Logged after the emit loop, so everything it counts is already on disk.
+                logger.info(
+                    "batch=%d/%d written clusters=%d/%d successful=%d discarded=%d elapsed=%.1fs",
+                    batch_number,
+                    total_batches,
+                    processed,
+                    len(clusters),
+                    success_count,
+                    processed - success_count,
+                    time.monotonic() - started,
+                )
+        logger.info(
+            "DONE. clusters=%d successful=%d discarded=%d elapsed=%.1fs",
+            processed,
+            success_count,
+            processed - success_count,
+            time.monotonic() - started,
+        )
     finally:
         for handler in logger.handlers:
             handler.close()
