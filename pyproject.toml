@@ -53,7 +53,14 @@ packages = ["src/mgnifam"]
 [tool.hatch.build.targets.sdist]
 # The 12 MB of gzipped FASTA fixtures and the review transcript are needed to develop
 # the project, not to install it. Keep them out of the published sdist.
-exclude = ["/tests", "/reference", "/PLAN.md", "/PLAN-REVIEW-LOG.md", "/.github"]
+exclude = [
+    "/tests",
+    "/reference",
+    "/PLAN.md",
+    "/PLAN-REVIEW-LOG.md",
+    "/.github",
+    "/.claude",
+]
 
 [dependency-groups]
 dev = ["pre-commit>=4.4.0", "pytest>=9.0.0"]
@@ -61,6 +68,9 @@ dev = ["pre-commit>=4.4.0", "pytest>=9.0.0"]
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+# Matches the pre-commit `exclude`. The legacy script is kept verbatim as the
+# behavioural reference for the port, so linting it would only invite edits.
+extend-exclude = ["reference"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
