@@ -3,7 +3,8 @@ name = "mgnifam"
 version = "1.0.0"
 description = "Iterative HMM-based protein family generation over very large sequence databases"
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Evangelos Karatzas", email = "vagkaratzas1990@gmail.com" }]
 maintainers = [{ name = "Evangelos Karatzas", email = "vagkaratzas1990@gmail.com" }]
 requires-python = ">=3.13"
@@ -18,9 +19,9 @@ keywords = [
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
     "Typing :: Typed",
 ]
@@ -52,10 +53,13 @@ packages = ["src/mgnifam"]
 
 [tool.hatch.build.targets.sdist]
 # The 12 MB of gzipped FASTA fixtures and the review transcript are needed to develop
-# the project, not to install it. Keep them out of the published sdist.
+# the project, not to install it. Keep them out of the published sdist. `/assets` goes
+# too: the README loads both logos from raw.githubusercontent.com, so shipping them was
+# 5 MB that nothing in the tarball referenced.
 exclude = [
     "/tests",
     "/reference",
+    "/assets",
     "/PLAN.md",
     "/PLAN-REVIEW-LOG.md",
     "/.github",
