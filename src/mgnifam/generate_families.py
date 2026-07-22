@@ -43,7 +43,7 @@ import shutil
 import tempfile
 import threading
 import time
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Generator, Iterable, Iterator, Mapping
 from collections.abc import Sequence as SequenceCollection
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -266,7 +266,7 @@ def search(
     logger: logging.Logger,
     batch_number: int,
     round_number: int,
-) -> Iterator[Iterator[Any]]:
+) -> Generator[Iterator[Any]]:
     """Search `hmms` against `targets`, yielding TopHits in query order.
 
     `targets` may be a streaming SequenceFile or a prefetched DigitalSequenceBlock; the
@@ -730,7 +730,7 @@ class Writers:
 
 
 @contextlib.contextmanager
-def deterministic_gzip_text(path: Path) -> Iterator[IO[str]]:
+def deterministic_gzip_text(path: Path) -> Generator[IO[str]]:
     with (
         path.open("wb") as raw,
         gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0) as compressed,
@@ -740,7 +740,7 @@ def deterministic_gzip_text(path: Path) -> Iterator[IO[str]]:
 
 
 @contextlib.contextmanager
-def deterministic_gzip_binary(path: Path) -> Iterator[IO[bytes]]:
+def deterministic_gzip_binary(path: Path) -> Generator[IO[bytes]]:
     with (
         path.open("wb") as raw,
         gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0) as compressed,
@@ -749,7 +749,7 @@ def deterministic_gzip_binary(path: Path) -> Iterator[IO[bytes]]:
 
 
 @contextlib.contextmanager
-def family_guard(family: Family, logger: logging.Logger, stage: str) -> Iterator[None]:
+def family_guard(family: Family, logger: logging.Logger, stage: str) -> Generator[None]:
     """Contain a per-family failure as a discard instead of losing the chunk.
 
     A chunk is thousands of families and hours of searching, and nothing is written until
