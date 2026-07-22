@@ -1,0 +1,75 @@
+name: Release
+
+# Fires only on a version tag, so publishing is never a side effect of a merge.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  # The same checks as CI. A tag can point at a commit that never went through a PR, so
+  # this must not be assumed to have run already.
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv lock --check && uv sync --frozen
+
+      - name: Lint and check formatting
+        run: uv run pre-commit run --all-files
+
+      - name: Run tests
+        run: uv run pytest
+
+  build:
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Refuse to publish a tag that disagrees with the package version
+        run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          declared="$(uv version --short)"
+          if [ "$tagged" != "$declared" ]; then
+            echo "tag $GITHUB_REF_NAME implies $tagged but pyproject declares $declared" >&2
+            exit 1
+          fi
+
+      - run: uv build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mgnifam
+    permissions:
+      # Mints the short-lived OIDC token Trusted Publishing exchanges for upload rights,
+      # which is why no PyPI API token is stored in this repository.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
