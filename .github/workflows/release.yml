@@ -3,7 +3,7 @@ name: Release
 # Fires only on a version tag, so publishing is never a side effect of a merge.
 on:
   push:
-    tags: ["v*"]
+    tags: ["v[0-9]*"]
 
 permissions:
   contents: read
