@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">
-    <img src="assets/logo.png" width="600" alt="mgnifam">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vagkaratzas/mgnifam/main/assets/logo-dark.png">
+    <img src="https://raw.githubusercontent.com/vagkaratzas/mgnifam/main/assets/logo.png" width="600" alt="mgnifam">
   </picture>
 </p>
 
