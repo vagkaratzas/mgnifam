@@ -6,7 +6,7 @@ readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Evangelos Karatzas", email = "vagkaratzas1990@gmail.com" }]
 maintainers = [{ name = "Evangelos Karatzas", email = "vagkaratzas1990@gmail.com" }]
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 keywords = [
     "bioinformatics",
     "protein-families",
@@ -20,11 +20,7 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
-    "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
     "Typing :: Typed",
 ]
@@ -64,7 +60,7 @@ dev = ["pre-commit>=4.4.0", "pytest>=9.0.0"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]

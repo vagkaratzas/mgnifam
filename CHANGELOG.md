@@ -83,7 +83,7 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
   directory and a logger writing straight to `logs/<chunk>.txt`.
 - Stale `<chunk>_<n>` artifacts are cleared at start-up, so a rerun producing fewer
   families no longer leaves the surplus behind.
-- Python `>= 3.12`. Dependencies updated to `pyhmmer>=0.12.1,<0.13`,
+- Python `>= 3.13`. Dependencies updated to `pyhmmer>=0.12.1,<0.13`,
   `pyfamsa>=0.7.0,<0.8`, `pytrimal>=0.8.5,<0.9`, `numpy>=2.5.1,<3`. Upper bounds are
   deliberate; see the note at the top of this file.
 - Dropped `pandas` (the cluster table is now an insertion-ordered `dict`; note that

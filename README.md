@@ -21,7 +21,7 @@ a standalone, tested package.
 uv sync
 ```
 
-Requires Python >= 3.12. Verify with `mgnifam --version`.
+Requires Python >= 3.13. Verify with `mgnifam --version`.
 
 ## Usage
 

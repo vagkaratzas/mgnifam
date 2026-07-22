@@ -1030,7 +1030,10 @@ def main(args: SequenceCollection[str] | None = None) -> None:
             success_count = 0
             processed = 0
             for batch_number, batch in enumerate(
-                itertools.batched(clusters.items(), options.batch_size), 1
+                # strict=False: the last wave is short whenever the cluster count is not a
+                # multiple of the batch size, which is the normal case, not an error.
+                itertools.batched(clusters.items(), options.batch_size, strict=False),
+                1,
             ):
                 active = [Family(representative, members) for representative, members in batch]
                 for family in active:
