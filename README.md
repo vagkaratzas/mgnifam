@@ -7,6 +7,8 @@
 
 # mgnifam
 
+[![PyPI](https://img.shields.io/pypi/v/mgnifam)](https://pypi.org/project/mgnifam/)
+
 Iterative HMM-based protein family generation over very large sequence databases.
 
 Given a chunk of MMseqs2 clusters and a protein FASTA, `mgnifam generate_families` builds an
