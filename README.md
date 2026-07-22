@@ -28,11 +28,20 @@ Requires Python >= 3.12. Verify with `mgnifam --version`.
 ```bash
 uv run mgnifam generate_families \
     --clusters_chunk clusters.tsv \
+    --fasta_file mgnifams_input.fa
+```
+
+Only those two are required. Every other flag defaults to the value below, so the run
+above is equivalent to spelling all of them out:
+
+```bash
+uv run mgnifam generate_families \
+    --clusters_chunk clusters.tsv \
     --fasta_file mgnifams_input.fa \
     --output_dir output \
     --cpus 8 \
     --chunk_num 1 \
-    --discard_min_rep_length 100 \
+    --discard_min_rep_length 75 \
     --discard_max_rep_length 2000 \
     --discard_min_starting_membership 0.9 \
     --max_seq_identity 0.8 \
@@ -48,8 +57,22 @@ stream — and its sequence names must be unique.
 
 ### Optional flags
 
+Pass every threshold explicitly on a production run. The defaults exist for ad-hoc use;
+relying on them means a forgotten flag produces a plausible-looking family set instead
+of an error.
+
 | flag | default | meaning |
 |---|---|---|
+| `--cpus` | `8` | Threads for FAMSA, `hmmsearch` and `hmmalign`. |
+| `--chunk_num` | `1` | Prefix for every output file and directory. Must match `[A-Za-z0-9._-]+`. |
+| `--discard_min_rep_length` | `75` | Discard a cluster whose representative is shorter than this. |
+| `--discard_max_rep_length` | `2000` | Discard a cluster whose representative is longer than this. |
+| `--discard_min_starting_membership` | `0.9` | Discard a family if fewer than this fraction of the original cluster members are still recruited by the final model. |
+| `--max_seq_identity` | `0.8` | Redundancy cutoff when trimming a full MSA down to the next seed. |
+| `--max_seed_seqs` | `2000` | Cap on sequences kept in a seed MSA. |
+| `--max_gap_occupancy` | `0.5` | Trim columns off both **ends** of the seed MSA until one clears this occupancy. Interior columns are kept. |
+| `--recruit_evalue_cutoff` | `0.001` | `hmmsearch` E-value threshold for recruiting new members. |
+| `--recruit_hit_length_percentage` | `0.9` | Minimum hit length as a fraction of the model length. |
 | `--fasta_index` | `<output_dir>/<fasta basename>.ssi` | Path to an Easel SSI index. Built automatically if absent. |
 | `--output_dir` | `output` | Root directory for every generated file and folder. |
 | `--batch_size` | `2 * cpus` | How many families are searched per `hmmsearch` wave. Keep it `>= cpus`. |
