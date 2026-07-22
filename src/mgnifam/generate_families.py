@@ -789,10 +789,15 @@ def emit_family(
     never receive an id or appear in that file.
 
     A representative must never appear in both `successful` and `discarded`, because
-    `family_guard` in `main` turns a failure here into a discard and re-emits. Two rules
-    keep that true: every row is composed before anything is written, and the per-family
-    files -- the writes that can actually fail, being one `open`/`write`/`close` each --
-    go before the first append to a shared per-chunk handle.
+    `family_guard` in `main` turns a failure here into a discard and re-emits. What keeps
+    that true is the write order: everything that can raise -- the renumbering, and the
+    per-family files, each its own `open`/`write`/`close` -- happens before the first
+    append to a shared per-chunk handle, and the shared appends then run uninterrupted.
+
+    Deliberately not buffered into row lists first. The row loop only formats strings
+    onto already-open handles, so a buffer would guard nothing (a `writelines` can flush
+    and fail mid-list just the same) while holding a per-member allocation for the
+    largest family in the batch.
     """
     provisional_id = success_count + 1
     if family.state is FamilyState.DISCARDED:
@@ -821,24 +826,6 @@ def emit_family(
     renumbered_seed = renumber_msa(seed_msa.textize(), family_name, indexed)
     renumbered_full = renumber_msa(full_msa, family_name, indexed)
 
-    refined_rows: list[str] = []
-    metadata_row = ""
-    representative_row = ""
-    for row_number, (name, row) in enumerate(
-        zip(renumbered_full.names, renumbered_full.alignment, strict=True)
-    ):
-        sequence_name = name.decode() if isinstance(name, bytes) else name
-        refined_rows.append(f"{provisional_id}\t{sequence_name}\n")
-        if row_number == 0:
-            # Row 0 is the representative: hits arrive in HMMER's ranking order.
-            residues = re.sub(r"[.\-~]", "", row).upper()
-            protein, _, region = sequence_name.partition("/")
-            metadata_row = (
-                f'{provisional_id},{family.full_msa_num_seqs},"{protein}",{region or "-"},'
-                f"{len(residues)},{residues},{final_hmm.consensus},{family.ever_converged}\n"
-            )
-            representative_row = f">{sequence_name}\t{chunk}_{provisional_id}\n{residues}\n"
-
     (writers.root / "rf" / f"{family_name}.txt").write_text(seed_msa.reference, encoding="utf-8")
     with deterministic_gzip_binary(writers.root / "hmm" / f"{family_name}.hmm.gz") as handle:
         final_hmm.write(handle)
@@ -855,9 +842,22 @@ def emit_family(
     if family.ever_converged:
         writers.converged_families.write(f"{provisional_id}\n")
     writers.successful_clusters.write(f"{family.representative}\n")
-    writers.refined_families.writelines(refined_rows)
-    writers.family_metadata.write(metadata_row)
-    writers.family_representatives.write(representative_row)
+    for row_number, (name, row) in enumerate(
+        zip(renumbered_full.names, renumbered_full.alignment, strict=True)
+    ):
+        sequence_name = name.decode() if isinstance(name, bytes) else name
+        writers.refined_families.write(f"{provisional_id}\t{sequence_name}\n")
+        if row_number == 0:
+            # Row 0 is the representative: hits arrive in HMMER's ranking order.
+            residues = re.sub(r"[.\-~]", "", row).upper()
+            protein, _, region = sequence_name.partition("/")
+            writers.family_metadata.write(
+                f'{provisional_id},{family.full_msa_num_seqs},"{protein}",{region or "-"},'
+                f"{len(residues)},{residues},{final_hmm.consensus},{family.ever_converged}\n"
+            )
+            writers.family_representatives.write(
+                f">{sequence_name}\t{chunk}_{provisional_id}\n{residues}\n"
+            )
     return provisional_id
 
 
