@@ -512,6 +512,79 @@ def test_rerun_removes_stale_family_artifacts(
         )
 
 
+def test_one_failing_family_is_discarded_and_the_chunk_survives(
+    tmp_path: Path,
+    fixture_directory: Path,
+    small_fasta: Path,
+    shared_index: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A family that raises must cost its own result, not the whole chunk's.
+
+    A chunk is hours of searching and nothing is written until a wave ends, so an
+    exception from one family used to destroy every family beside it. `emit_family` is
+    the stage under test because it is the one that writes: the failure has to leave no
+    half-written trail, so the representative must reach `discarded` and never
+    `successful`, and the ids of the families that follow must stay contiguous.
+    """
+    clean = run_pipeline(
+        tmp_path / "clean",
+        cli_args(fixture_directory / "clustering.tsv", small_fasta, fasta_index=shared_index),
+    )
+    survivors = (clean / "chunk_successful.txt").read_text().splitlines()
+    assert len(survivors) > 1, "fixture must produce several families for this to mean anything"
+    doomed = survivors[0]
+
+    original = gf.renumber_msa
+    failed_once = False
+
+    def explode(msa, family_name, indexed):  # type: ignore[no-untyped-def]
+        # Keyed on the first call, not on the name: a failed family releases its id, so
+        # the next family to succeed is renamed into it and a name-keyed trap cascades.
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            raise RuntimeError("synthetic failure, comma included")
+        return original(msa, family_name, indexed)
+
+    monkeypatch.setattr(gf, "renumber_msa", explode)
+    output = run_pipeline(
+        tmp_path / "guarded",
+        cli_args(fixture_directory / "clustering.tsv", small_fasta, fasta_index=shared_index),
+    )
+
+    discarded = (output / "chunk_discarded.csv").read_text().splitlines()
+    failed_rows = [row for row in discarded if "internal error" in row]
+    assert failed_rows == [f"{doomed},internal error during artifact writing,0.0"]
+    # A comma in the stage text would have split the CSV.
+    assert all(len(row.split(",")) == 3 for row in discarded)
+
+    remaining = (output / "chunk_successful.txt").read_text().splitlines()
+    assert doomed not in remaining
+    assert remaining == survivors[1:]
+
+    # The failure wrote nothing, so no artifact carries the id it would have taken, and
+    # the families after it close the gap rather than inheriting it.
+    ids = sorted(int(path.name.split("_")[1].split(".")[0]) for path in (output / "hmm").iterdir())
+    assert ids == list(range(1, len(remaining) + 1))
+    assert "synthetic failure" in (output / "chunk.log").read_text()
+
+
+def test_family_guard_contains_only_exceptions() -> None:
+    """The guard converts a failure into a discard, but must not swallow an interrupt."""
+    logger = logging.getLogger("mgnifam.test.guard")
+    family = gf.Family("rep", ["a"])
+    with gf.family_guard(family, logger, "round 2"):
+        raise ValueError("boom")
+    assert family.state is gf.FamilyState.DISCARDED
+    assert family.discard_reason == "internal error during round 2"
+
+    unaffected = gf.Family("rep2", ["a"])
+    with pytest.raises(KeyboardInterrupt), gf.family_guard(unaffected, logger, "round 2"):
+        raise KeyboardInterrupt
+    assert unaffected.state is gf.FamilyState.RUNNING
+
+
 def _raw_signature(top_hits: object) -> list[tuple[str, float, tuple[tuple[int, int], ...]]]:
     """Signature over the *stored* hit list, including entries below the report cutoff.
 

@@ -748,6 +748,26 @@ def deterministic_gzip_binary(path: Path) -> Iterator[IO[bytes]]:
         yield compressed
 
 
+@contextlib.contextmanager
+def family_guard(family: Family, logger: logging.Logger, stage: str) -> Iterator[None]:
+    """Contain a per-family failure as a discard instead of losing the chunk.
+
+    A chunk is thousands of families and hours of searching, and nothing is written until
+    a wave finishes, so an exception raised by one family used to destroy the work of
+    every family beside it. A discard is a result the run already knows how to record.
+
+    Only `Exception` is caught: KeyboardInterrupt and SystemExit must still stop the run.
+    The traceback goes to the chunk log, because a discard line is a summary and the
+    reason a family blew up is a bug report.
+    """
+    try:
+        yield
+    except Exception:
+        logger.exception("family %s failed during %s", family.representative, stage)
+        # Commas would split the discarded-clusters CSV; `stage` is caller-supplied text.
+        family.discard(f"internal error during {stage}".replace(",", " "), 0.0)
+
+
 def emit_family(
     family: Family,
     success_count: int,
@@ -761,6 +781,10 @@ def emit_family(
 
     Only successful families are written to `converged_families`; discarded families
     never receive an id or appear in that file.
+
+    Everything that can raise is computed before the first write, so a family that fails
+    here leaves no half-written trail: `family_guard` in `main` turns the failure into a
+    discard, and a representative must not appear in both `successful` and `discarded`.
     """
     provisional_id = success_count + 1
     if family.state is FamilyState.DISCARDED:
@@ -769,9 +793,6 @@ def emit_family(
         )
         return success_count
 
-    family.family_id = provisional_id
-    if family.ever_converged:
-        writers.converged_families.write(f"{provisional_id}\n")
     family_name = f"{chunk}_{provisional_id}"
     seed_msa = cast(pyhmmer.easel.DigitalMSA, family.seed_msa)
     full_msa = cast(pyhmmer.easel.TextMSA, family.full_msa)
@@ -786,16 +807,20 @@ def emit_family(
     final_hmm.creation_time = None
     final_hmm.command_line = None
 
-    writers.successful_clusters.write(f"{family.representative}\n")
     if seed_msa.reference is None:
         raise ValueError("successful seed MSA has no RF reference annotation")
+    indexed = cast(IndexedSequences, writers.indexed)
+    renumbered_seed = renumber_msa(seed_msa.textize(), family_name, indexed)
+    renumbered_full = renumber_msa(full_msa, family_name, indexed)
+
+    family.family_id = provisional_id
+    if family.ever_converged:
+        writers.converged_families.write(f"{provisional_id}\n")
+    writers.successful_clusters.write(f"{family.representative}\n")
     (writers.root / "rf" / f"{family_name}.txt").write_text(seed_msa.reference, encoding="utf-8")
     with deterministic_gzip_binary(writers.root / "hmm" / f"{family_name}.hmm.gz") as handle:
         final_hmm.write(handle)
 
-    indexed = cast(IndexedSequences, writers.indexed)
-    renumbered_seed = renumber_msa(seed_msa.textize(), family_name, indexed)
-    renumbered_full = renumber_msa(full_msa, family_name, indexed)
     for directory, msa in (
         ("seed_msa", renumbered_seed),
         ("full_msa", renumbered_full),
@@ -996,19 +1021,33 @@ def main(args: SequenceCollection[str] | None = None) -> None:
             ):
                 active = [Family(representative, members) for representative, members in batch]
                 for family in active:
-                    family.initialise(indexed_sequences, options.cpus)
+                    with family_guard(family, logger, "initialisation"):
+                        family.initialise(indexed_sequences, options.cpus)
 
                 for round_number in range(1, MAX_ROUNDS + 1):
                     running = [family for family in active if family.state is FamilyState.RUNNING]
                     if not running:
                         break
-                    hmms = [
-                        run_hmmbuild(
-                            cast(pyhmmer.easel.DigitalMSA, family.seed_msa),
-                            f"pending_{batch_number}_{round_number}_{index}",
-                        )
-                        for index, family in enumerate(running)
-                    ]
+                    # Built one at a time rather than as a comprehension so a single bad
+                    # seed becomes that family's discard instead of the batch's death. The
+                    # placeholder name is not affected by a gap in the numbering: it is
+                    # overwritten in `emit_family` and never reaches the model.
+                    pending: list[tuple[Family, pyhmmer.plan7.HMM]] = []
+                    for index, family in enumerate(running):
+                        with family_guard(family, logger, f"round {round_number} model build"):
+                            pending.append(
+                                (
+                                    family,
+                                    run_hmmbuild(
+                                        cast(pyhmmer.easel.DigitalMSA, family.seed_msa),
+                                        f"pending_{batch_number}_{round_number}_{index}",
+                                    ),
+                                )
+                            )
+                    if not pending:
+                        continue
+                    searching = [family for family, _ in pending]
+                    hmms = [hmm for _, hmm in pending]
                     with search(
                         hmms,
                         targets,
@@ -1018,16 +1057,28 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                         batch_number=batch_number,
                         round_number=round_number,
                     ) as searched:
-                        for family, hmm, hits in zip(running, hmms, searched, strict=True):
-                            family.hmm = hmm
-                            family.qlen = hits.query.M
-                            family.records = extract_records(hits)
-                            family.advance(options, indexed_sequences, round_number)
+                        for family, hmm, hits in zip(searching, hmms, searched, strict=True):
+                            with family_guard(family, logger, f"round {round_number}"):
+                                family.hmm = hmm
+                                family.qlen = hits.query.M
+                                family.records = extract_records(hits)
+                                family.advance(options, indexed_sequences, round_number)
 
                 for family in active:
-                    family.finish(options, indexed_sequences)
+                    with family_guard(family, logger, "the exit branch"):
+                        family.finish(options, indexed_sequences)
                 for family in active:
-                    success_count = emit_family(family, success_count, options.chunk_num, writers)
+                    emitted = False
+                    with family_guard(family, logger, "artifact writing"):
+                        success_count = emit_family(
+                            family, success_count, options.chunk_num, writers
+                        )
+                        emitted = True
+                    if not emitted:
+                        # The guard turned the failure into a discard, and a discard is a
+                        # result: emit it. `emit_family` computes before it writes, so the
+                        # failed attempt left nothing behind and this writes only the row.
+                        emit_family(family, success_count, options.chunk_num, writers)
         logger.info("DONE.")
     finally:
         for handler in logger.handlers:
