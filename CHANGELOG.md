@@ -11,7 +11,7 @@ Byte-level reproducibility is only claimed for the dependency set resolved in th
 committed `uv.lock`. pyhmmer, pyfamsa and pytrimal determine hit retention, alignment
 and serialised bytes, so a change in any of them may change outputs.
 
-## [1.0.0] - unreleased
+## v1.0.0 - [2026/07/22]
 
 First release of `mgnifam` as a standalone package. The algorithm is a port of
 `generate_families.py` from the [mgnifams](https://github.com/vagkaratzas/mgnifams)
@@ -175,7 +175,7 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
   gain their `#=GF ID`, lose the padded name column, and correct the two truncated names
   above.
 
-## [0.1.0] - legacy
+## v0.1.0 - legacy
 
 The original `mgnifams/bin/generate_families.py`, vendored unmodified at
 `reference/legacy_generate_families.py` and kept as the behavioural reference for this
