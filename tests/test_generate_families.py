@@ -1031,7 +1031,7 @@ def test_cli_reports_version(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as excinfo:
         cli.main(["--version"])
     assert excinfo.value.code == 0
-    assert capsys.readouterr().out.strip() == f"mgnifam {__version__}"
+    assert capsys.readouterr().out.strip() == __version__
 
 
 def test_console_script_and_module_entry_points_agree() -> None:
@@ -1040,7 +1040,7 @@ def test_console_script_and_module_entry_points_agree() -> None:
     module = subprocess.run(
         [sys.executable, "-m", "mgnifam", "--version"], capture_output=True, text=True, check=True
     )
-    assert script.stdout == module.stdout == f"mgnifam {__version__}\n"
+    assert script.stdout == module.stdout == f"{__version__}\n"
 
 
 def test_clip_ends_keeps_every_column_above_the_occupancy_threshold() -> None:

@@ -28,7 +28,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         prog="mgnifam",
         description="Protein family generation over very large sequence databases.",
     )
-    parser.add_argument("--version", action="version", version=f"mgnifam {__version__}")
+    # Bare number, no program-name prefix: the common caller is a script capturing this
+    # into a variable, and stripping a prefix back off is the caller's problem otherwise.
+    parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("command", choices=sorted(COMMANDS), help="subcommand to run")
     # REMAINDER hands every following token to the subcommand untouched, including
     # --help, so `mgnifam generate_families --help` reaches the subcommand's parser.
