@@ -61,6 +61,8 @@ CHUNK_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
 # Per-family artifacts: one file per family, so they get a directory each. Everything
 # else is a single file per chunk and lives flat in the output root as `<chunk>_*`.
 FAMILY_DIRECTORIES = ("seed_msa", "full_msa", "hmm", "rf")
+# Gives every `configure_logger` call its own name in the `logging` cache. See its docstring.
+_logger_serial = itertools.count()
 
 
 class DuplicateSequenceName(ValueError):
@@ -595,7 +597,6 @@ class Family:
     discard_reason: str = ""
     discard_value: int | float = 0.0
     ever_converged: bool = False
-    family_id: int | None = None
 
     def discard(self, reason: str, value: int | float) -> None:
         self.state = FamilyState.DISCARDED
@@ -838,14 +839,14 @@ def emit_family(
         with deterministic_gzip_binary(path) as handle:
             msa.write(handle, format="pfam")
 
-    family.family_id = provisional_id
     if family.ever_converged:
         writers.converged_families.write(f"{provisional_id}\n")
     writers.successful_clusters.write(f"{family.representative}\n")
-    for row_number, (name, row) in enumerate(
+    # `names` are `str`: this MSA was built by `renumber_msa` out of `TextSequence`s. Only
+    # pytrimal hands back `bytes`, and that is decoded in `pytrimal_to_pyhmmer`.
+    for row_number, (sequence_name, row) in enumerate(
         zip(renumbered_full.names, renumbered_full.alignment, strict=True)
     ):
-        sequence_name = name.decode() if isinstance(name, bytes) else name
         writers.refined_families.write(f"{provisional_id}\t{sequence_name}\n")
         if row_number == 0:
             # Row 0 is the representative: hits arrive in HMMER's ranking order.
@@ -961,7 +962,14 @@ def prepare_output_directories(root: Path, chunk: str) -> None:
 
 
 def configure_logger(path: Path) -> logging.Logger:
-    logger = logging.getLogger(f"mgnifam.generate_families.{path.stem}.{id(path)}")
+    """Return a private logger writing to `path`, distinct from every earlier one.
+
+    The serial matters because `logging` caches by name and the tests call `main()` many
+    times in one process. Previously that slot held `id(path)` -- of a temporary, whose
+    address CPython is free to hand to the next `Path`, which would silently return an
+    already-configured logger and append a second handler to it.
+    """
+    logger = logging.getLogger(f"mgnifam.generate_families.{path.stem}.{next(_logger_serial)}")
     logger.setLevel(logging.INFO)
     logger.propagate = False
     handler = logging.FileHandler(path, mode="w", encoding="utf-8")

@@ -63,7 +63,6 @@ exclude = [
     "/PLAN.md",
     "/PLAN-REVIEW-LOG.md",
     "/.github",
-    "/.claude",
 ]
 
 [dependency-groups]

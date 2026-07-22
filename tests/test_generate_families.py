@@ -417,7 +417,6 @@ def test_converged_discard_is_not_recorded(tmp_path: Path, monkeypatch: pytest.M
     )
     success_count = gf.emit_family(successful, success_count, "chunk", writers)
     assert success_count == 1
-    assert successful.family_id == 1
     assert writers.converged_families.getvalue() == "1\n"
 
 
@@ -479,7 +478,6 @@ def test_failed_artifact_write_leaves_no_row_in_the_shared_files(
         writers.discarded_clusters,
     ):
         assert handle.getvalue() == ""
-    assert family.family_id is None
 
     # What `main` does next: the guard discards, and the re-emit writes only that row.
     family.discard("internal error during artifact writing", 0.0)
