@@ -121,7 +121,9 @@ def build_ssi_index(fasta: str | os.PathLike[str], ssi_path: str | os.PathLike[s
     """Build an Easel SSI index for `fasta`, replacing `ssi_path` atomically.
 
     `fasta` must be uncompressed: Easel cannot seek within a gzip stream. Its sequence
-    names must be unique, or `DuplicateSequenceName` is raised.
+    names must be unique, or `DuplicateSequenceName` is raised, and non-empty, or
+    `ValueError` is -- a bare `>` line otherwise reached `split()[0]` as an `IndexError`,
+    which is the one malformed input that produced a traceback instead of a message.
 
     The index is built inside a private directory on the destination filesystem and
     moved into place only on success, so a concurrent reader never observes a partial
@@ -156,8 +158,12 @@ def build_ssi_index(fasta: str | os.PathLike[str], ssi_path: str | os.PathLike[s
                 if not line:
                     break
                 if line.startswith(b">"):
-                    name = line[1:].split(maxsplit=1)[0].decode()
-                    writer.add_key(name, file_number, record_offset)
+                    fields = line[1:].split(maxsplit=1)
+                    if not fields:
+                        raise ValueError(
+                            f"FASTA header at byte offset {record_offset} has no sequence name"
+                        )
+                    writer.add_key(fields[0].decode(), file_number, record_offset)
         try:
             writer.close()
         except ValueError as error:
@@ -782,9 +788,11 @@ def emit_family(
     Only successful families are written to `converged_families`; discarded families
     never receive an id or appear in that file.
 
-    Everything that can raise is computed before the first write, so a family that fails
-    here leaves no half-written trail: `family_guard` in `main` turns the failure into a
-    discard, and a representative must not appear in both `successful` and `discarded`.
+    A representative must never appear in both `successful` and `discarded`, because
+    `family_guard` in `main` turns a failure here into a discard and re-emits. Two rules
+    keep that true: every row is composed before anything is written, and the per-family
+    files -- the writes that can actually fail, being one `open`/`write`/`close` each --
+    go before the first append to a shared per-chunk handle.
     """
     provisional_id = success_count + 1
     if family.state is FamilyState.DISCARDED:
@@ -813,10 +821,24 @@ def emit_family(
     renumbered_seed = renumber_msa(seed_msa.textize(), family_name, indexed)
     renumbered_full = renumber_msa(full_msa, family_name, indexed)
 
-    family.family_id = provisional_id
-    if family.ever_converged:
-        writers.converged_families.write(f"{provisional_id}\n")
-    writers.successful_clusters.write(f"{family.representative}\n")
+    refined_rows: list[str] = []
+    metadata_row = ""
+    representative_row = ""
+    for row_number, (name, row) in enumerate(
+        zip(renumbered_full.names, renumbered_full.alignment, strict=True)
+    ):
+        sequence_name = name.decode() if isinstance(name, bytes) else name
+        refined_rows.append(f"{provisional_id}\t{sequence_name}\n")
+        if row_number == 0:
+            # Row 0 is the representative: hits arrive in HMMER's ranking order.
+            residues = re.sub(r"[.\-~]", "", row).upper()
+            protein, _, region = sequence_name.partition("/")
+            metadata_row = (
+                f'{provisional_id},{family.full_msa_num_seqs},"{protein}",{region or "-"},'
+                f"{len(residues)},{residues},{final_hmm.consensus},{family.ever_converged}\n"
+            )
+            representative_row = f">{sequence_name}\t{chunk}_{provisional_id}\n{residues}\n"
+
     (writers.root / "rf" / f"{family_name}.txt").write_text(seed_msa.reference, encoding="utf-8")
     with deterministic_gzip_binary(writers.root / "hmm" / f"{family_name}.hmm.gz") as handle:
         final_hmm.write(handle)
@@ -829,22 +851,13 @@ def emit_family(
         with deterministic_gzip_binary(path) as handle:
             msa.write(handle, format="pfam")
 
-    for row_number, (name, row) in enumerate(
-        zip(renumbered_full.names, renumbered_full.alignment, strict=True)
-    ):
-        sequence_name = name.decode() if isinstance(name, bytes) else name
-        writers.refined_families.write(f"{provisional_id}\t{sequence_name}\n")
-        if row_number == 0:
-            # Row 0 is the representative: hits arrive in HMMER's ranking order.
-            residues = re.sub(r"[.\-~]", "", row).upper()
-            protein, _, region = sequence_name.partition("/")
-            writers.family_metadata.write(
-                f'{provisional_id},{family.full_msa_num_seqs},"{protein}",{region or "-"},'
-                f"{len(residues)},{residues},{final_hmm.consensus},{family.ever_converged}\n"
-            )
-            writers.family_representatives.write(
-                f">{sequence_name}\t{chunk}_{provisional_id}\n{residues}\n"
-            )
+    family.family_id = provisional_id
+    if family.ever_converged:
+        writers.converged_families.write(f"{provisional_id}\n")
+    writers.successful_clusters.write(f"{family.representative}\n")
+    writers.refined_families.writelines(refined_rows)
+    writers.family_metadata.write(metadata_row)
+    writers.family_representatives.write(representative_row)
     return provisional_id
 
 

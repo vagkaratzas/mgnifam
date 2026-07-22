@@ -48,8 +48,6 @@ enumerated under *Changed* and *Fixed*, and every one of them is intentional.
   uncompressed, percentages must lie in `[0, 1]`, length bounds must be ordered, and
   every cluster TSV row must hold exactly two non-empty fields.
 - A time-throttled heartbeat, logged every 300 s during a database pass.
-- `pytest` suite (37 tests) over real 50,000- and 26,949-sequence fixtures, and
-  `pre-commit` with `ruff`.
 
 ### Changed
 

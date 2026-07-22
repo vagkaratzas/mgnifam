@@ -165,6 +165,31 @@ def test_build_ssi_index_round_trip_and_errors(tmp_path: Path, small_fasta: Path
     assert set(tmp_path.iterdir()) == before
 
 
+def test_nameless_fasta_header_is_rejected_with_a_message(tmp_path: Path) -> None:
+    """A bare `>` line must fail like every other malformed input, not with a traceback.
+
+    `split(maxsplit=1)[0]` raised `IndexError` on the empty header, which is the one
+    input shape that reached the user as a stack trace rather than a sentence. The byte
+    offset is in the message because a nameless record has nothing else to identify it.
+    """
+    nameless = tmp_path / "nameless.fa"
+    nameless.write_text(">first\nAAAA\n>\nCCCC\n")
+    before = set(tmp_path.iterdir())
+    with pytest.raises(ValueError, match=r"byte offset 12 has no sequence name"):
+        gf.build_ssi_index(nameless, tmp_path / "nameless.ssi")
+    assert set(tmp_path.iterdir()) == before
+
+    # A header carrying a description still takes its name from the first field.
+    described = tmp_path / "described.fa"
+    described.write_text(">acc desc with spaces\nAAAA\n")
+    gf.build_ssi_index(described, tmp_path / "described.ssi")
+    with (
+        pyhmmer.easel.SSIReader(tmp_path / "described.ssi") as reader,
+        pyhmmer.easel.SequenceFile(described, digital=False, index=reader) as indexed,
+    ):
+        assert gf.fetch_indexed_sequence(indexed.indexed, "acc").sequence == "AAAA"
+
+
 def test_index_mismatch_guard_and_optimized_python(tmp_path: Path) -> None:
     wrong = pyhmmer.easel.TextSequence(name="wrong", sequence="AAAA")
     with pytest.raises(gf.IndexMismatchError):
@@ -394,6 +419,73 @@ def test_converged_discard_is_not_recorded(tmp_path: Path, monkeypatch: pytest.M
     assert success_count == 1
     assert successful.family_id == 1
     assert writers.converged_families.getvalue() == "1\n"
+
+
+def test_failed_artifact_write_leaves_no_row_in_the_shared_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A family that dies mid-emit must not be recorded as successful *and* discarded.
+
+    `family_guard` in `main` turns a failure here into a discard and re-emits, so any row
+    already appended to a shared per-chunk handle becomes a contradiction: the same
+    representative in `successful.txt` and in `discarded.csv`. The per-family files are
+    the writes that can fail, so they must all be closed before the first shared append.
+    The trap fires on the *last* of them, which is what makes this an ordering test
+    rather than a "nothing was written before the first gzip" test.
+    """
+    store = FakeSequences({"a": "AAAA", "b": "AAAT"})
+    for directory in gf.FAMILY_DIRECTORIES:
+        (tmp_path / directory).mkdir()
+    writers = gf.Writers(
+        root=tmp_path,
+        indexed=store,
+        refined_families=io.StringIO(),
+        discarded_clusters=io.StringIO(),
+        successful_clusters=io.StringIO(),
+        converged_families=io.StringIO(),
+        family_metadata=io.StringIO(),
+        family_representatives=io.StringIO(),
+    )
+    family = gf.Family(
+        "a",
+        ["a", "b"],
+        state=gf.FamilyState.SUCCESSFUL,
+        seed_msa=text_msa(["a", "b"], ["AAAA", "AAAT"], "xxxx").digitize(gf.ALPHABET),
+        full_msa=text_msa(["a", "b"], ["AAAA", "AAAT"], "xxxx"),
+        full_msa_num_seqs=2,
+        ever_converged=True,
+    )
+
+    original = gf.deterministic_gzip_binary
+    remaining = 3  # rf is a write_text; the gzipped ones are hmm, seed_msa, full_msa.
+
+    def failing(path: Path):  # type: ignore[no-untyped-def]
+        nonlocal remaining
+        remaining -= 1
+        if remaining == 0:
+            raise OSError("no space left on device")
+        return original(path)
+
+    monkeypatch.setattr(gf, "deterministic_gzip_binary", failing)
+    with pytest.raises(OSError, match="no space left"):
+        gf.emit_family(family, 0, "chunk", writers)
+
+    for handle in (
+        writers.successful_clusters,
+        writers.converged_families,
+        writers.refined_families,
+        writers.family_metadata,
+        writers.family_representatives,
+        writers.discarded_clusters,
+    ):
+        assert handle.getvalue() == ""
+    assert family.family_id is None
+
+    # What `main` does next: the guard discards, and the re-emit writes only that row.
+    family.discard("internal error during artifact writing", 0.0)
+    assert gf.emit_family(family, 0, "chunk", writers) == 0
+    assert writers.successful_clusters.getvalue() == ""
+    assert writers.discarded_clusters.getvalue() == "a,internal error during artifact writing,0.0\n"
 
 
 def test_cpus_and_sanity_anchors(
