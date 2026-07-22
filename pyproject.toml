@@ -1,0 +1,83 @@
+[project]
+name = "mgnifam"
+version = "1.0.0"
+description = "Iterative HMM-based protein family generation over very large sequence databases"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Evangelos Karatzas", email = "vagkaratzas1990@gmail.com" }]
+maintainers = [{ name = "Evangelos Karatzas", email = "vagkaratzas1990@gmail.com" }]
+requires-python = ">=3.13"
+keywords = [
+    "bioinformatics",
+    "protein-families",
+    "hmm",
+    "hmmer",
+    "msa",
+    "metagenomics",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Typing :: Typed",
+]
+# Upper bounds are deliberate: pyhmmer/pyfamsa/pytrimal decide hit retention,
+# alignment and serialised bytes, so the byte-reproducibility contract in the
+# README only holds for the resolved set recorded in uv.lock.
+dependencies = [
+    "numpy>=2.5.1,<3",
+    "pyfamsa>=0.7.0,<0.8",
+    "pyhmmer>=0.12.1,<0.13",
+    "pytrimal>=0.8.5,<0.9",
+]
+
+[project.scripts]
+mgnifam = "mgnifam.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/vagkaratzas/mgnifam"
+Repository = "https://github.com/vagkaratzas/mgnifam"
+Changelog = "https://github.com/vagkaratzas/mgnifam/blob/main/CHANGELOG.md"
+Issues = "https://github.com/vagkaratzas/mgnifam/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mgnifam"]
+
+[tool.hatch.build.targets.sdist]
+# The 12 MB of gzipped FASTA fixtures and the review transcript are needed to develop
+# the project, not to install it. Keep them out of the published sdist. `/assets` goes
+# too: the README loads both logos from raw.githubusercontent.com, so shipping them was
+# 5 MB that nothing in the tarball referenced.
+exclude = [
+    "/tests",
+    "/reference",
+    "/assets",
+    "/PLAN.md",
+    "/PLAN-REVIEW-LOG.md",
+    "/.github",
+]
+
+[dependency-groups]
+dev = ["pre-commit>=4.4.0", "pytest>=9.0.0"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+# Matches the pre-commit `exclude`. The legacy script is kept verbatim as the
+# behavioural reference for the port, so linting it would only invite edits.
+extend-exclude = ["reference"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
