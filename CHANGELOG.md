@@ -15,7 +15,13 @@ That guarantee is scoped to the dependency set resolved in the committed `uv.loc
 and serialised bytes, so installing from PyPI — which resolves within the declared
 version ranges instead — may produce different results on a different resolution.
 
-## [1.1.0.dev0] - unreleased
+## [2.0.0] - 2026/07/29
+
+A major version because two documented behaviours change: the two per-chunk CSVs gain a
+header row, and an explicitly supplied `--fasta_index` is no longer built when it is
+missing. Both are listed under *Changed* below. Scientific outputs are unaffected for
+databases whose accessions carry no underscores beyond their slice bounds, which is every
+MGnifams accession — see *Fixed*.
 
 ### Changed
 
@@ -32,9 +38,11 @@ version ranges instead — may produce different results on a different resoluti
   the first batch rather than by `emit_family`, so a chunk that produces no families and
   a chunk that discards nothing both still yield a parseable file instead of an empty one.
 
-- An explicit `--fasta_index` is now used exactly as given and never rebuilt, which makes
-  a single index safely shareable across parallel chunk tasks — the case the flag exists
-  for. `resolve_index` previously rebuilt any index whose mtime predated its FASTA's,
+- **Breaking:** an explicit `--fasta_index` is now used exactly as given and never
+  rebuilt, which makes a single index safely shareable across parallel chunk tasks — the
+  case the flag exists for. Pointing the flag at a path that does not yet exist used to
+  build an index there, as the README documented; it is now rejected as a typo.
+  `resolve_index` previously rebuilt any index whose mtime predated its FASTA's,
   treating a caller-supplied path as a cache it owned. An mtime comparison is not a
   staleness signal for a path this process did not create, and two consequences followed:
 
