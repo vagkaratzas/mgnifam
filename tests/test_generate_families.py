@@ -84,6 +84,17 @@ def run_pipeline(directory: Path, arguments: list[str]) -> Path:
     return directory / "output"
 
 
+def csv_rows(path: Path, header: str) -> list[str]:
+    """Return a per-chunk CSV's data rows, asserting its header line first.
+
+    Every reader of `_metadata.csv` and `_discarded.csv` goes through here, so the header
+    is checked wherever those files are checked rather than in one test of its own.
+    """
+    lines = path.read_text().splitlines()
+    assert lines[0] == header.rstrip("\n")
+    return lines[1:]
+
+
 def scientific_artifacts(directory: Path) -> dict[str, bytes]:
     artifacts = {}
     for path in sorted(directory.glob("**/*")):
@@ -212,6 +223,46 @@ raise SystemExit(1)
     assert result.returncode == 0
 
 
+def test_supplied_fasta_index_is_used_as_given_and_never_rebuilt(
+    tmp_path: Path, fixture_directory: Path, small_fasta: Path
+) -> None:
+    """`--fasta_index` belongs to whoever built it, and is not a cache this tool owns.
+
+    `resolve_index` used to rebuild any index whose mtime predated its FASTA's. That is
+    not a staleness signal for a path this process did not create: copying, restoring
+    from an archive, or rebuilding the FASTA from identical bytes all reorder the two
+    without invalidating anything, and `Path.stat()` follows symlinks, so a linked index
+    reports its target's timestamp rather than the link's. Every concurrent chunk sharing
+    the index then re-indexed the whole database at once -- the exact cost the flag
+    exists to avoid. Where the index is not writable the same branch could not even do
+    that, and `mkdtemp` raised `PermissionError` after the run had already started.
+    """
+    fasta = tmp_path / "db.fa"
+    fasta.write_bytes(small_fasta.read_bytes())
+    index = tmp_path / "db.ssi"
+    gf.build_ssi_index(fasta, index)
+    # A valid index whose mtime predates the FASTA it describes, which is all the old
+    # staleness test looked at.
+    os.utime(index, (0, 0))
+    before = index.read_bytes()
+
+    output = run_pipeline(
+        tmp_path / "run",
+        cli_args(fixture_directory / "clustering.tsv", fasta, fasta_index=index),
+    )
+
+    assert index.stat().st_mtime_ns == 0
+    assert index.read_bytes() == before
+    # Nor was a replacement built under the output directory as a side effect.
+    assert list(output.glob("*.ssi")) == []
+    assert len(csv_rows(output / "chunk_metadata.csv", gf.METADATA_HEADER)) == 3
+
+    # A path that does not exist is a typo, not a request to build an index there. It has
+    # to fail in `validate_inputs`, before any output directory is touched.
+    with pytest.raises(ValueError, match="fasta_index must be an existing file"):
+        gf.main(cli_args(fixture_directory / "clustering.tsv", fasta, fasta_index=tmp_path / "no"))
+
+
 def test_soft_masked_fasta_is_normalised_at_the_fetch_boundary(tmp_path: Path) -> None:
     """A lower-case (soft-masked) database must not break residue location.
 
@@ -221,7 +272,7 @@ def test_soft_masked_fasta_is_normalised_at_the_fetch_boundary(tmp_path: Path) -
     chunk down at emit time -- after the searches had already been paid for.
     """
     masked = tmp_path / "masked.fa"
-    masked.write_text(">prot_101_140\nmktaylaagivgqqqqq\n")
+    masked.write_text(">prot_101_117\nmktaylaagivgqqqqq\n")
     index = tmp_path / "masked.ssi"
     gf.build_ssi_index(masked, index)
 
@@ -230,9 +281,9 @@ def test_soft_masked_fasta_is_normalised_at_the_fetch_boundary(tmp_path: Path) -
         pyhmmer.easel.SequenceFile(masked, digital=False, index=reader) as handle,
     ):
         sequences = gf.IndexedSequences(handle)
-        assert sequences.get("prot_101_140") == gf.Sequence("prot_101_140", "MKTAYLAAGIVGQQQQQ")
+        assert sequences.get("prot_101_117") == gf.Sequence("prot_101_117", "MKTAYLAAGIVGQQQQQ")
         # The alignment row is upper case with an insert column; it must still resolve.
-        assert gf.parse_protein_name("prot_101_140", "MKTAY-laa", sequences) == "prot/101-108"
+        assert gf.parse_protein_name("prot_101_117", "MKTAY-laa", sequences) == "prot/101-108"
 
 
 def text_msa(names: list[str], sequences: list[str], reference: str) -> pyhmmer.easel.TextMSA:
@@ -273,16 +324,18 @@ def test_parse_protein_name_resolves_repeats_within_their_envelope() -> None:
     duplicate. Searching within the row's own envelope keeps them apart.
     """
     repeat = "MKVLAAGIVG"
-    store = FakeSequences({"prot_101_140": f"{repeat}QQQQQ{repeat}QQQQQ"})
+    # 101..130 is 30 residues, which is what the record holds: `split_slice_name` only
+    # reads a name as a slice when its bounds span the record exactly.
+    store = FakeSequences({"prot_101_130": f"{repeat}QQQQQ{repeat}QQQQQ"})
 
-    first = gf.parse_protein_name("prot_101_140/1_10", repeat, store)
-    second = gf.parse_protein_name("prot_101_140/16_25", repeat, store)
+    first = gf.parse_protein_name("prot_101_130/1_10", repeat, store)
+    second = gf.parse_protein_name("prot_101_130/16_25", repeat, store)
 
     assert (first, second) == ("prot/101-110", "prot/116-125")
 
     # Gap characters are stripped, and a row shorter than its record still gets coordinates
     # -- legacy truncated this name to the bare accession to fit the old name column.
-    assert gf.parse_protein_name("prot_101_140", f"-{repeat[1:]}...QQQQQ", store) == "prot/102-115"
+    assert gf.parse_protein_name("prot_101_130", f"-{repeat[1:]}...QQQQQ", store) == "prot/102-115"
 
     # A row spanning the whole of an unsliced record keeps the bare accession, which
     # `family_metadata` records as region "-".
@@ -290,7 +343,39 @@ def test_parse_protein_name_resolves_repeats_within_their_envelope() -> None:
     assert gf.parse_protein_name("prot", repeat, whole) == "prot"
 
     with pytest.raises(ValueError, match="not in its envelope"):
-        gf.parse_protein_name("prot_101_140/1_10", "WWWWWWWWWW", store)
+        gf.parse_protein_name("prot_101_130/1_10", "WWWWWWWWWW", store)
+
+
+def test_underscores_in_protein_names_are_not_mistaken_for_slice_bounds() -> None:
+    """A protein name may contain underscores; only real slice bounds may be stripped.
+
+    Three names the three-field `split("_")` test got wrong. Each was reported by a user
+    running the tool on a database whose accessions are not bare MGnifams integers.
+    """
+    repeat = "MKVLAAGIVG"
+
+    # A slice of a protein whose own name contains underscores. Legacy kept only the first
+    # field, renaming every row of the family to `contig`.
+    sliced = FakeSequences({"contig_1_gene_2_88_117": f"{repeat}QQQQQ{repeat}QQQQQ"})
+    assert (
+        gf.parse_protein_name("contig_1_gene_2_88_117/16_25", repeat, sliced)
+        == "contig_1_gene_2/103-112"
+    )
+
+    # Non-numeric trailing fields are not bounds. This reached `int()` and raised, and
+    # `family_guard` recorded the whole family as an internal-error discard.
+    named = FakeSequences({"contig_1_gene_x": f"{repeat}QQQQQ"})
+    assert gf.parse_protein_name("contig_1_gene_x", repeat, named) == "contig_1_gene_x/1-10"
+    assert gf.parse_protein_name("contig_1_gene_x", f"{repeat}QQQQQ", named) == "contig_1_gene_x"
+
+    # Numeric trailing fields that do not span the record are part of the name, not bounds.
+    # 34 - 12 + 1 is 23; the record is 15 residues, so `scaffold_12_34` is a whole protein.
+    coincidental = FakeSequences({"scaffold_12_34": f"{repeat}QQQQQ"})
+    assert gf.parse_protein_name("scaffold_12_34", repeat, coincidental) == "scaffold_12_34/1-10"
+
+    # The span test is the whole disambiguator: same name, and now the bounds do fit.
+    real_slice = FakeSequences({"scaffold_12_34": f"{repeat}{repeat}QQQ"})
+    assert gf.parse_protein_name("scaffold_12_34", repeat, real_slice) == "scaffold/12-21"
 
 
 def test_seed_membership_counts_distinct_proteins_on_both_sides() -> None:
@@ -508,7 +593,7 @@ def test_cpus_and_sanity_anchors(
         "1622851798_832_939",
         "4497037939_1_144",
     ]
-    metadata = (baseline_output / "chunk_metadata.csv").read_text().splitlines()
+    metadata = csv_rows(baseline_output / "chunk_metadata.csv", gf.METADATA_HEADER)
     assert [line.split(",")[2].strip('"') for line in metadata] == [
         "782510898",
         "5761513631",
@@ -543,7 +628,7 @@ def test_batch_size_invariance(
     for output in outputs:
         mapping = [
             (line.split(",")[2], line.split(",", 1)[0])
-            for line in (output / "chunk_metadata.csv").read_text().splitlines()
+            for line in csv_rows(output / "chunk_metadata.csv", gf.METADATA_HEADER)
         ]
         assert mapping == [('"782510898"', "1"), ('"5761513631"', "2"), ('"1446399400"', "3")]
 
@@ -643,7 +728,7 @@ def test_one_failing_family_is_discarded_and_the_chunk_survives(
         cli_args(fixture_directory / "clustering.tsv", small_fasta, fasta_index=shared_index),
     )
 
-    discarded = (output / "chunk_discarded.csv").read_text().splitlines()
+    discarded = csv_rows(output / "chunk_discarded.csv", gf.DISCARDED_HEADER)
     failed_rows = [row for row in discarded if "internal error" in row]
     assert failed_rows == [f"{doomed},internal error during artifact writing,0.0"]
     # A comma in the stage text would have split the CSV.
@@ -941,7 +1026,7 @@ def test_declared_outputs_parse_and_long_fixture_runs(
             # Every row is renumbered onto its parent protein, with no padding left over.
             for name in msa.names:
                 assert name == name.strip()
-    assert len((baseline_output / "chunk_metadata.csv").read_text().splitlines()) == 3
+    assert len(csv_rows(baseline_output / "chunk_metadata.csv", gf.METADATA_HEADER)) == 3
 
     long_output = run_pipeline(
         tmp_path / "long",
@@ -969,7 +1054,7 @@ def test_v2_full_tsv_end_to_end(
     v2_output: Path,
 ) -> None:
     representatives = list(gf.load_clusters(fixture_directory / "mgnifams_v2.tsv"))
-    discarded = (v2_output / "v2_discarded.csv").read_text().splitlines()
+    discarded = csv_rows(v2_output / "v2_discarded.csv", gf.DISCARDED_HEADER)
     discarded_representatives = {line.split(",", 1)[0] for line in discarded}
     successful = (v2_output / "v2_successful.txt").read_text().splitlines()
 
@@ -986,7 +1071,7 @@ def test_v2_full_tsv_end_to_end(
         str(family_id) for family_id in range(5, 13)
     ]
 
-    metadata = (v2_output / "v2_metadata.csv").read_text().splitlines()
+    metadata = csv_rows(v2_output / "v2_metadata.csv", gf.METADATA_HEADER)
     assert [line.split(",", 1)[0] for line in metadata] == [str(i) for i in range(1, 13)]
     assert len((v2_output / "v2_families.tsv").read_text().splitlines()) == 405
     for directory in gf.FAMILY_DIRECTORIES:

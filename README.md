@@ -87,7 +87,7 @@ of an error.
 | `--max_gap_occupancy` | `0.5` | Trim columns off both **ends** of the seed MSA until one clears this occupancy. Interior columns are kept. |
 | `--recruit_evalue_cutoff` | `0.001` | `hmmsearch` E-value threshold for recruiting new members. |
 | `--recruit_hit_length_percentage` | `0.9` | Minimum hit length as a fraction of the model length. |
-| `--fasta_index` | `<output_dir>/<fasta basename>.ssi` | Path to an Easel SSI index. Built automatically if absent. |
+| `--fasta_index` | `<output_dir>/<fasta basename>.ssi` | Path to an Easel SSI index. Used exactly as given and never rebuilt; only the default path is built automatically. |
 | `--output_dir` | `output` | Root directory for every generated file and folder. |
 | `--batch_size` | `2 * cpus` | How many families are searched per `hmmsearch` wave. Keep it `>= cpus`. |
 | `--prefetch_targets` | off | Load the database into RAM once instead of streaming it per query. Faster, `O(database)` memory, **identical results**. |
@@ -101,12 +101,26 @@ in RAM.
 otherwise re-index the whole database:
 
 ```bash
-# once, upstream
+# once, upstream -- either of these
 uv run python -c "from mgnifam.generate_families import build_ssi_index; \
                   build_ssi_index('db.fa', 'db.fa.ssi')"
+esl-sfetch --index db.fa                     # HMMER/Easel, e.g. the nf-core module
 # then, per chunk
 uv run mgnifam generate_families --fasta_index db.fa.ssi ...
 ```
+
+A supplied index is used as given and never rebuilt, so parallel chunk tasks can share
+one read-only index safely — including one staged as a symlink by a workflow manager.
+It is an error for it to be missing rather than a request to build one there, and one
+that does not match the FASTA fails at the first fetch instead of being silently
+replaced. The FASTA's filename need not match the one it was indexed under.
+
+An index from `esl-sfetch --index` is interchangeable with one from `build_ssi_index`
+for whole-record fetches, which is all `generate_families` performs. The two are not
+byte-identical: `esl-sfetch` also records each record's `data_offset` and
+`record_length`, which enables `esl-sfetch -c <from>..<to>` subsequence fetches against
+its own index but not against ours, and it sizes the index's filename field from the
+path you typed, so its output is not reproducible across directories. Ours is.
 
 `generate_families` is the only subcommand today. `mgnifam --help` lists them, and
 `python -m mgnifam` is equivalent to the console script.
@@ -132,11 +146,22 @@ One file per chunk, so flat in the output root:
 | `<chunk>_families.tsv` | `family_id<TAB>sequence` |
 | `<chunk>_metadata.csv` | one row per family |
 | `<chunk>_successful.txt` | representatives that produced a family |
-| `<chunk>_discarded.csv` | `representative,reason,value` |
+| `<chunk>_discarded.csv` | one row per discarded cluster |
 | `<chunk>_converged.txt` | ids of successful families that converged naturally |
 | `<chunk>.log` | run log |
 
 Family ids are a 1-based rank among *successful* families, in cluster-file order.
+
+Both CSVs carry a header row, so they load with `pandas.read_csv` as they are:
+
+| file | columns |
+|---|---|
+| `<chunk>_metadata.csv` | `family_id,full_msa_size,protein,region,length,sequence,consensus,converged` |
+| `<chunk>_discarded.csv` | `representative,reason,value` |
+
+`protein` is quoted; `region` is `<start>-<end>` on the parent protein, or `-` when the
+representative spans a whole unsliced record. The header is written before the run
+starts, so a chunk that produces no families still yields a parseable file.
 
 ## Why this is fast now
 

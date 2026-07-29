@@ -61,6 +61,10 @@ CHUNK_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
 # Per-family artifacts: one file per family, so they get a directory each. Everything
 # else is a single file per chunk and lives flat in the output root as `<chunk>_*`.
 FAMILY_DIRECTORIES = ("seed_msa", "full_msa", "hmm", "rf")
+# Header rows for the two per-chunk CSVs, written by `main` before any result. Column
+# order is the order `emit_family` writes, and must be changed with it.
+METADATA_HEADER = "family_id,full_msa_size,protein,region,length,sequence,consensus,converged\n"
+DISCARDED_HEADER = "representative,reason,value\n"
 # Gives every `configure_logger` call its own name in the `logging` cache. See its docstring.
 _logger_serial = itertools.count()
 
@@ -514,6 +518,34 @@ def check_seed_membership(
     return len(original_first_parts & filtered_first_parts) / len(original_first_parts)
 
 
+def split_slice_name(record_name: str, record_length: int) -> tuple[str, int] | None:
+    """Split `<protein>_<start>_<end>` into its parent protein and 1-based start.
+
+    Returns None when `record_name` is not a slice, so the caller reads it as the name of
+    a whole protein.
+
+    The trailing two fields are slice bounds only if they are integers *and* they span
+    exactly as many residues as the record holds. That span test is what makes an
+    arbitrary protein name safe: without it a protein legitimately called `scaffold_12_34`
+    is read as a slice of `scaffold` and reported at invented parent coordinates. It costs
+    one `len()` on a string the caller has already fetched, and it holds for every slice in
+    the database -- a record named `<protein>_<start>_<end>` is that slice by construction.
+
+    Partitioning from the right rather than requiring `split("_")` to yield exactly three
+    fields: a protein whose own name contains underscores is still a slice
+    (`contig_1_gene_2_88_140`), and the three-field test truncated such a name to its first
+    field. A name whose trailing fields are not numeric (`contig_1_gene_x`) reached
+    `int()` and raised, which `family_guard` then recorded as an internal-error discard.
+    """
+    protein, _, end = record_name.rpartition("_")
+    protein, _, start = protein.rpartition("_")
+    if not protein or not start.isdigit() or not end.isdigit():
+        return None
+    if int(end) - int(start) + 1 != record_length:
+        return None
+    return protein, int(start)
+
+
 def parse_protein_name(row_name: str, aligned_row: str, indexed_sequences: IndexedSequences) -> str:
     """Rename one alignment row to `<protein>/<start>-<end>` on the parent protein.
 
@@ -540,16 +572,18 @@ def parse_protein_name(row_name: str, aligned_row: str, indexed_sequences: Index
     if offset < 0:
         raise ValueError(f"{row_name}: aligned residues are not in its envelope of {record_name}")
 
-    splits = record_name.split("_")
-    if len(splits) != 3:
+    slice_bounds = split_slice_name(record_name, len(record))
+    if slice_bounds is None:
         # A name without slice bounds is a whole protein. When the row spans all of it the
         # legacy script emitted the bare accession, which `family_metadata` records as
         # region "-"; that convention is downstream-visible, so it is kept.
         if len(residues) == len(record):
             return record_name
-        return f"{splits[0]}/{offset + 1}-{offset + len(residues)}"
-    start = offset + int(splits[1])
-    return f"{splits[0]}/{start}-{start + len(residues) - 1}"
+        protein, start = record_name, 1
+    else:
+        protein, start = slice_bounds
+    absolute = offset + start
+    return f"{protein}/{absolute}-{absolute + len(residues) - 1}"
 
 
 def renumber_msa(
@@ -919,6 +953,10 @@ def validate_inputs(options: argparse.Namespace) -> dict[str, list[str]]:
         raise ValueError("fasta_file must be uncompressed; SSI cannot seek in gzip streams")
     if not Path(options.clusters_chunk).is_file():
         raise ValueError("clusters_chunk must be an existing file")
+    # Checked here, not in `resolve_index`, because an explicit index is never built: a
+    # typo used to be absorbed as a silent rebuild under whatever path was misspelled.
+    if options.fasta_index and not Path(options.fasta_index).is_file():
+        raise ValueError("fasta_index must be an existing file; a supplied index is never built")
     if options.cpus < 1:
         raise ValueError("cpus must be at least 1")
     if options.batch_size < 0:
@@ -979,13 +1017,37 @@ def configure_logger(path: Path) -> logging.Logger:
 
 
 def resolve_index(options: argparse.Namespace, root: Path) -> Path:
-    """Return the SSI index path, building it if absent or older than the FASTA.
+    """Return the SSI index path, building one under `root` only if none was supplied.
 
-    Production runs should pass `--fasta_index` to share one index across chunk tasks;
-    otherwise every task re-indexes the whole database under its output directory.
+    An explicit `--fasta_index` is used exactly as given and never rebuilt. It belongs to
+    whoever built it, and the flag exists so that many concurrent chunk processes can
+    share one index instead of each building its own. Treating it as a cache this
+    function owns has two failure modes, neither of them the caller's fault:
+
+    - The mtime test is not a reliable staleness signal for a path this process did not
+      create. `Path.stat()` follows symlinks, so for a linked index it reports the
+      *target's* timestamp, and a caller is free to link the FASTA and the index from
+      unrelated places whose relative order says nothing about whether one describes the
+      other. Copying, restoring from a backup or archive, or rebuilding the FASTA from
+      identical bytes all reorder the two. The index then looks stale, and every
+      concurrent chunk re-indexes the whole database at once -- the exact cost
+      `--fasta_index` exists to avoid.
+    - An index kept somewhere the process cannot write -- a shared reference directory,
+      a read-only mount -- cannot be rebuilt at all: `build_ssi_index` creates its
+      scratch directory beside the destination, so the run dies with a `PermissionError`
+      out of `mkdtemp` rather than a message.
+
+    A supplied index that does not match the FASTA is not silently tolerated -- it
+    surfaces at the first fetch as `IndexMismatchError` or `KeyError`, which is a better
+    outcome than an unrequested multi-hour rebuild.
+
+    The default path under `--output_dir` is still built and refreshed automatically:
+    nothing else owns it, so this function can.
     """
+    if options.fasta_index:
+        return Path(options.fasta_index)
     fasta = Path(options.fasta_file)
-    index = Path(options.fasta_index) if options.fasta_index else root / f"{fasta.name}.ssi"
+    index = root / f"{fasta.name}.ssi"
     if not index.exists() or index.stat().st_mtime_ns < fasta.stat().st_mtime_ns:
         build_ssi_index(fasta, index)
     return index
@@ -1048,6 +1110,10 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                     deterministic_gzip_text(root / f"{options.chunk_num}_reps.fasta.gz")
                 ),
             )
+            # Written here rather than in `emit_family`, which runs per family: a chunk
+            # that produces no families at all still gets a readable, parseable CSV.
+            writers.family_metadata.write(METADATA_HEADER)
+            writers.discarded_clusters.write(DISCARDED_HEADER)
             success_count = 0
             processed = 0
             for batch_number, batch in enumerate(

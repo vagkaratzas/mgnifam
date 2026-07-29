@@ -15,6 +15,87 @@ That guarantee is scoped to the dependency set resolved in the committed `uv.loc
 and serialised bytes, so installing from PyPI — which resolves within the declared
 version ranges instead — may produce different results on a different resolution.
 
+## [2.0.0] - 2026/07/29
+
+A major version because two documented behaviours change: the two per-chunk CSVs gain a
+header row, and an explicitly supplied `--fasta_index` is no longer built when it is
+missing. Both are listed under *Changed* below. Scientific outputs are unaffected for
+databases whose accessions carry no underscores beyond their slice bounds, which is every
+MGnifams accession — see *Fixed*.
+
+### Changed
+
+- **Breaking:** `<chunk>_metadata.csv` and `<chunk>_discarded.csv` now start with a header
+  row, so both load with `pandas.read_csv` without `header=None` and a hand-maintained
+  `names=`. Any reader that does not skip it will treat the header as data.
+
+  ```
+  family_id,full_msa_size,protein,region,length,sequence,consensus,converged
+  representative,reason,value
+  ```
+
+  Column order is unchanged — only the row is new. Headers are written by `main` before
+  the first batch rather than by `emit_family`, so a chunk that produces no families and
+  a chunk that discards nothing both still yield a parseable file instead of an empty one.
+
+- **Breaking:** an explicit `--fasta_index` is now used exactly as given and never
+  rebuilt, which makes a single index safely shareable across parallel chunk tasks — the
+  case the flag exists for. Pointing the flag at a path that does not yet exist used to
+  build an index there, as the README documented; it is now rejected as a typo.
+  `resolve_index` previously rebuilt any index whose mtime predated its FASTA's,
+  treating a caller-supplied path as a cache it owned. An mtime comparison is not a
+  staleness signal for a path this process did not create, and two consequences followed:
+
+  - Copying, restoring from a backup or archive, or rebuilding the FASTA from identical
+    bytes all reorder the two timestamps without invalidating anything. `Path.stat()`
+    also follows symlinks, so a linked index reports its *target's* timestamp rather than
+    the link's, and the FASTA and the index may be linked from unrelated places whose
+    relative order says nothing about whether one describes the other. Every concurrent
+    chunk sharing the index then re-indexed the whole database at once — precisely the
+    cost `--fasta_index` is meant to avoid. The shared index itself was never corrupted
+    (`os.replace` hits the link, not its target), only the work wasted.
+  - An index kept somewhere the process cannot write — a shared reference directory, a
+    read-only mount — could not be rebuilt at all: `build_ssi_index` creates its scratch
+    directory beside the destination, so the run died with a `PermissionError` from
+    `mkdtemp` after the chunk had already started.
+
+  A missing `--fasta_index` is now rejected by `validate_inputs` as a typo instead of
+  being absorbed as a build at the misspelled path, and an index that does not match its
+  FASTA still surfaces at the first fetch as `IndexMismatchError`. The default path under
+  `--output_dir` is unchanged: nothing else owns it, so it is still built and refreshed
+  automatically. Guard: `test_supplied_fasta_index_is_used_as_given_and_never_rebuilt`.
+
+  Verified interoperable with `esl-sfetch --index` in both directions. The two indexes
+  are not byte-identical — `esl-sfetch` also fills `data_offset` and `record_length`, and
+  sizes the filename field from the path it was given — but `generate_families` performs
+  only whole-record fetches, for which they are interchangeable.
+
+### Fixed
+
+- Protein names containing underscores are no longer misread as slice bounds. A database
+  record named `<protein>_<start>_<end>` is a slice of a parent protein, and
+  `parse_protein_name` recovered the parent by requiring `split("_")` to yield exactly
+  three fields. Three name shapes broke on that test, all reported by users running the
+  tool on databases whose accessions are not bare MGnifams integers:
+  - `contig_1_gene_2_88_140` — a genuine slice of a protein whose own name contains
+    underscores. Four fields failed the length test, so the row was treated as a whole
+    protein and renamed to `contig`, silently discarding everything after the first field.
+  - `contig_1_gene_x` — three fields, but not numeric ones. `int()` raised, `family_guard`
+    caught it, and the entire family was recorded as an internal-error discard.
+  - `scaffold_12_34` — three numeric fields that are part of the name, not bounds. The row
+    was reported at invented parent coordinates.
+
+  Name splitting now happens from the right, via the new `split_slice_name()`, and the
+  trailing two fields are accepted as bounds only when they are integers *and* span
+  exactly as many residues as the record holds. That span test is the disambiguator: it
+  holds for every real slice by construction, and rejects a coincidental `_12_34`. A name
+  that fails it is treated as a whole protein, which is the safe reading — no crash, no
+  truncation. Cost is one `len()` on a string already fetched: measured at +194 ns against
+  the 11 µs `parse_protein_name` spends per row, 82% of which is its SSI fetch.
+
+  This diverges from `reference/legacy_generate_families.py`, which has the same defect.
+  Guard: `test_underscores_in_protein_names_are_not_mistaken_for_slice_bounds`.
+
 ## [1.0.0] - 2026/07/22
 
 First release of `mgnifam` as a standalone package. The algorithm is a port of
