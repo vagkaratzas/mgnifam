@@ -32,6 +32,32 @@ version ranges instead — may produce different results on a different resoluti
   the first batch rather than by `emit_family`, so a chunk that produces no families and
   a chunk that discards nothing both still yield a parseable file instead of an empty one.
 
+- An explicit `--fasta_index` is now used exactly as given and never rebuilt, which makes
+  a single index safely shareable across parallel chunk tasks — the case the flag exists
+  for. `resolve_index` previously rebuilt any index older than its FASTA, treating a
+  caller-supplied path as a cache it owned. Two consequences, both reachable in an
+  ordinary Nextflow run against an index from an upstream `HMMER_ESLSFETCHINDEX` task:
+
+  - `Path.stat()` follows symlinks, so the mtime test compared the two *staged
+    originals*. A resumed run whose FASTA task re-ran while the index task stayed cached
+    made every parallel chunk silently re-index the whole database — precisely the cost
+    `--fasta_index` is meant to avoid. The shared index itself was never corrupted
+    (`os.replace` hits the staged symlink, not its target), only the work wasted.
+  - An index on a read-only reference mount could not be rebuilt at all: `build_ssi_index`
+    creates its scratch directory beside the destination, so the run died with a
+    `PermissionError` from `mkdtemp` after the chunk had already started.
+
+  A missing `--fasta_index` is now rejected by `validate_inputs` as a typo instead of
+  being absorbed as a build at the misspelled path, and an index that does not match its
+  FASTA still surfaces at the first fetch as `IndexMismatchError`. The default path under
+  `--output_dir` is unchanged: nothing else owns it, so it is still built and refreshed
+  automatically. Guard: `test_supplied_fasta_index_is_used_as_given_and_never_rebuilt`.
+
+  Verified interoperable with `esl-sfetch --index` in both directions. The two indexes
+  are not byte-identical — `esl-sfetch` also fills `data_offset` and `record_length`, and
+  sizes the filename field from the path it was given — but `generate_families` performs
+  only whole-record fetches, for which they are interchangeable.
+
 ### Fixed
 
 - Protein names containing underscores are no longer misread as slice bounds. A database

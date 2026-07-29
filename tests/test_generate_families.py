@@ -223,6 +223,46 @@ raise SystemExit(1)
     assert result.returncode == 0
 
 
+def test_supplied_fasta_index_is_used_as_given_and_never_rebuilt(
+    tmp_path: Path, fixture_directory: Path, small_fasta: Path
+) -> None:
+    """`--fasta_index` belongs to whoever built it, and is not a cache this tool owns.
+
+    `resolve_index` used to rebuild any index whose mtime predated its FASTA's. That is
+    not a staleness signal for a path this process did not create: copying, restoring
+    from an archive, or rebuilding the FASTA from identical bytes all reorder the two
+    without invalidating anything, and `Path.stat()` follows symlinks, so a linked index
+    reports its target's timestamp rather than the link's. Every concurrent chunk sharing
+    the index then re-indexed the whole database at once -- the exact cost the flag
+    exists to avoid. Where the index is not writable the same branch could not even do
+    that, and `mkdtemp` raised `PermissionError` after the run had already started.
+    """
+    fasta = tmp_path / "db.fa"
+    fasta.write_bytes(small_fasta.read_bytes())
+    index = tmp_path / "db.ssi"
+    gf.build_ssi_index(fasta, index)
+    # A valid index whose mtime predates the FASTA it describes, which is all the old
+    # staleness test looked at.
+    os.utime(index, (0, 0))
+    before = index.read_bytes()
+
+    output = run_pipeline(
+        tmp_path / "run",
+        cli_args(fixture_directory / "clustering.tsv", fasta, fasta_index=index),
+    )
+
+    assert index.stat().st_mtime_ns == 0
+    assert index.read_bytes() == before
+    # Nor was a replacement built under the output directory as a side effect.
+    assert list(output.glob("*.ssi")) == []
+    assert len(csv_rows(output / "chunk_metadata.csv", gf.METADATA_HEADER)) == 3
+
+    # A path that does not exist is a typo, not a request to build an index there. It has
+    # to fail in `validate_inputs`, before any output directory is touched.
+    with pytest.raises(ValueError, match="fasta_index must be an existing file"):
+        gf.main(cli_args(fixture_directory / "clustering.tsv", fasta, fasta_index=tmp_path / "no"))
+
+
 def test_soft_masked_fasta_is_normalised_at_the_fetch_boundary(tmp_path: Path) -> None:
     """A lower-case (soft-masked) database must not break residue location.
 

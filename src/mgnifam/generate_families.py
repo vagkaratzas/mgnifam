@@ -953,6 +953,10 @@ def validate_inputs(options: argparse.Namespace) -> dict[str, list[str]]:
         raise ValueError("fasta_file must be uncompressed; SSI cannot seek in gzip streams")
     if not Path(options.clusters_chunk).is_file():
         raise ValueError("clusters_chunk must be an existing file")
+    # Checked here, not in `resolve_index`, because an explicit index is never built: a
+    # typo used to be absorbed as a silent rebuild under whatever path was misspelled.
+    if options.fasta_index and not Path(options.fasta_index).is_file():
+        raise ValueError("fasta_index must be an existing file; a supplied index is never built")
     if options.cpus < 1:
         raise ValueError("cpus must be at least 1")
     if options.batch_size < 0:
@@ -1013,13 +1017,37 @@ def configure_logger(path: Path) -> logging.Logger:
 
 
 def resolve_index(options: argparse.Namespace, root: Path) -> Path:
-    """Return the SSI index path, building it if absent or older than the FASTA.
+    """Return the SSI index path, building one under `root` only if none was supplied.
 
-    Production runs should pass `--fasta_index` to share one index across chunk tasks;
-    otherwise every task re-indexes the whole database under its output directory.
+    An explicit `--fasta_index` is used exactly as given and never rebuilt. It belongs to
+    whoever built it, and the flag exists so that many concurrent chunk processes can
+    share one index instead of each building its own. Treating it as a cache this
+    function owns has two failure modes, neither of them the caller's fault:
+
+    - The mtime test is not a reliable staleness signal for a path this process did not
+      create. `Path.stat()` follows symlinks, so for a linked index it reports the
+      *target's* timestamp, and a caller is free to link the FASTA and the index from
+      unrelated places whose relative order says nothing about whether one describes the
+      other. Copying, restoring from a backup or archive, or rebuilding the FASTA from
+      identical bytes all reorder the two. The index then looks stale, and every
+      concurrent chunk re-indexes the whole database at once -- the exact cost
+      `--fasta_index` exists to avoid.
+    - An index kept somewhere the process cannot write -- a shared reference directory,
+      a read-only mount -- cannot be rebuilt at all: `build_ssi_index` creates its
+      scratch directory beside the destination, so the run dies with a `PermissionError`
+      out of `mkdtemp` rather than a message.
+
+    A supplied index that does not match the FASTA is not silently tolerated -- it
+    surfaces at the first fetch as `IndexMismatchError` or `KeyError`, which is a better
+    outcome than an unrequested multi-hour rebuild.
+
+    The default path under `--output_dir` is still built and refreshed automatically:
+    nothing else owns it, so this function can.
     """
+    if options.fasta_index:
+        return Path(options.fasta_index)
     fasta = Path(options.fasta_file)
-    index = Path(options.fasta_index) if options.fasta_index else root / f"{fasta.name}.ssi"
+    index = root / f"{fasta.name}.ssi"
     if not index.exists() or index.stat().st_mtime_ns < fasta.stat().st_mtime_ns:
         build_ssi_index(fasta, index)
     return index
