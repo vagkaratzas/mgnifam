@@ -17,6 +17,32 @@ version ranges instead — may produce different results on a different resoluti
 
 ## [1.1.0.dev0] - unreleased
 
+### Fixed
+
+- Protein names containing underscores are no longer misread as slice bounds. A database
+  record named `<protein>_<start>_<end>` is a slice of a parent protein, and
+  `parse_protein_name` recovered the parent by requiring `split("_")` to yield exactly
+  three fields. Three name shapes broke on that test, all reported by users running the
+  tool on databases whose accessions are not bare MGnifams integers:
+  - `contig_1_gene_2_88_140` — a genuine slice of a protein whose own name contains
+    underscores. Four fields failed the length test, so the row was treated as a whole
+    protein and renamed to `contig`, silently discarding everything after the first field.
+  - `contig_1_gene_x` — three fields, but not numeric ones. `int()` raised, `family_guard`
+    caught it, and the entire family was recorded as an internal-error discard.
+  - `scaffold_12_34` — three numeric fields that are part of the name, not bounds. The row
+    was reported at invented parent coordinates.
+
+  Name splitting now happens from the right, via the new `split_slice_name()`, and the
+  trailing two fields are accepted as bounds only when they are integers *and* span
+  exactly as many residues as the record holds. That span test is the disambiguator: it
+  holds for every real slice by construction, and rejects a coincidental `_12_34`. A name
+  that fails it is treated as a whole protein, which is the safe reading — no crash, no
+  truncation. Cost is one `len()` on a string already fetched: measured at +194 ns against
+  the 11 µs `parse_protein_name` spends per row, 82% of which is its SSI fetch.
+
+  This diverges from `reference/legacy_generate_families.py`, which has the same defect.
+  Guard: `test_underscores_in_protein_names_are_not_mistaken_for_slice_bounds`.
+
 ## [1.0.0] - 2026/07/22
 
 First release of `mgnifam` as a standalone package. The algorithm is a port of

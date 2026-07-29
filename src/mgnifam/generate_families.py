@@ -514,6 +514,34 @@ def check_seed_membership(
     return len(original_first_parts & filtered_first_parts) / len(original_first_parts)
 
 
+def split_slice_name(record_name: str, record_length: int) -> tuple[str, int] | None:
+    """Split `<protein>_<start>_<end>` into its parent protein and 1-based start.
+
+    Returns None when `record_name` is not a slice, so the caller reads it as the name of
+    a whole protein.
+
+    The trailing two fields are slice bounds only if they are integers *and* they span
+    exactly as many residues as the record holds. That span test is what makes an
+    arbitrary protein name safe: without it a protein legitimately called `scaffold_12_34`
+    is read as a slice of `scaffold` and reported at invented parent coordinates. It costs
+    one `len()` on a string the caller has already fetched, and it holds for every slice in
+    the database -- a record named `<protein>_<start>_<end>` is that slice by construction.
+
+    Partitioning from the right rather than requiring `split("_")` to yield exactly three
+    fields: a protein whose own name contains underscores is still a slice
+    (`contig_1_gene_2_88_140`), and the three-field test truncated such a name to its first
+    field. A name whose trailing fields are not numeric (`contig_1_gene_x`) reached
+    `int()` and raised, which `family_guard` then recorded as an internal-error discard.
+    """
+    protein, _, end = record_name.rpartition("_")
+    protein, _, start = protein.rpartition("_")
+    if not protein or not start.isdigit() or not end.isdigit():
+        return None
+    if int(end) - int(start) + 1 != record_length:
+        return None
+    return protein, int(start)
+
+
 def parse_protein_name(row_name: str, aligned_row: str, indexed_sequences: IndexedSequences) -> str:
     """Rename one alignment row to `<protein>/<start>-<end>` on the parent protein.
 
@@ -540,16 +568,18 @@ def parse_protein_name(row_name: str, aligned_row: str, indexed_sequences: Index
     if offset < 0:
         raise ValueError(f"{row_name}: aligned residues are not in its envelope of {record_name}")
 
-    splits = record_name.split("_")
-    if len(splits) != 3:
+    slice_bounds = split_slice_name(record_name, len(record))
+    if slice_bounds is None:
         # A name without slice bounds is a whole protein. When the row spans all of it the
         # legacy script emitted the bare accession, which `family_metadata` records as
         # region "-"; that convention is downstream-visible, so it is kept.
         if len(residues) == len(record):
             return record_name
-        return f"{splits[0]}/{offset + 1}-{offset + len(residues)}"
-    start = offset + int(splits[1])
-    return f"{splits[0]}/{start}-{start + len(residues) - 1}"
+        protein, start = record_name, 1
+    else:
+        protein, start = slice_bounds
+    absolute = offset + start
+    return f"{protein}/{absolute}-{absolute + len(residues) - 1}"
 
 
 def renumber_msa(

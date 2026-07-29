@@ -68,6 +68,14 @@ occupancy threshold, and reported a full span when no column passed. Both were f
 1.0.0, so it now diverges from `reference/legacy_generate_families.py` on purpose. If you
 diff against the legacy baseline, expect every model to be one match state wider.
 
+`split_slice_name()` is the second deliberate divergence. Legacy recovered a slice's
+parent protein with `split("_")` on exactly three fields, which truncated any protein
+name that itself contains underscores, raised on non-numeric trailing fields, and
+invented coordinates for a name like `scaffold_12_34`. It now splits from the right and
+accepts the trailing two fields as bounds only if they span the record exactly. On a
+database of bare MGnifams integer accessions the two agree on every record — the span
+test holds for every real slice — so this changes no output for the reference data.
+
 ## Testing
 
 `generate_families` writes every generated artifact under `--output_dir` (default:

@@ -221,7 +221,7 @@ def test_soft_masked_fasta_is_normalised_at_the_fetch_boundary(tmp_path: Path) -
     chunk down at emit time -- after the searches had already been paid for.
     """
     masked = tmp_path / "masked.fa"
-    masked.write_text(">prot_101_140\nmktaylaagivgqqqqq\n")
+    masked.write_text(">prot_101_117\nmktaylaagivgqqqqq\n")
     index = tmp_path / "masked.ssi"
     gf.build_ssi_index(masked, index)
 
@@ -230,9 +230,9 @@ def test_soft_masked_fasta_is_normalised_at_the_fetch_boundary(tmp_path: Path) -
         pyhmmer.easel.SequenceFile(masked, digital=False, index=reader) as handle,
     ):
         sequences = gf.IndexedSequences(handle)
-        assert sequences.get("prot_101_140") == gf.Sequence("prot_101_140", "MKTAYLAAGIVGQQQQQ")
+        assert sequences.get("prot_101_117") == gf.Sequence("prot_101_117", "MKTAYLAAGIVGQQQQQ")
         # The alignment row is upper case with an insert column; it must still resolve.
-        assert gf.parse_protein_name("prot_101_140", "MKTAY-laa", sequences) == "prot/101-108"
+        assert gf.parse_protein_name("prot_101_117", "MKTAY-laa", sequences) == "prot/101-108"
 
 
 def text_msa(names: list[str], sequences: list[str], reference: str) -> pyhmmer.easel.TextMSA:
@@ -273,16 +273,18 @@ def test_parse_protein_name_resolves_repeats_within_their_envelope() -> None:
     duplicate. Searching within the row's own envelope keeps them apart.
     """
     repeat = "MKVLAAGIVG"
-    store = FakeSequences({"prot_101_140": f"{repeat}QQQQQ{repeat}QQQQQ"})
+    # 101..130 is 30 residues, which is what the record holds: `split_slice_name` only
+    # reads a name as a slice when its bounds span the record exactly.
+    store = FakeSequences({"prot_101_130": f"{repeat}QQQQQ{repeat}QQQQQ"})
 
-    first = gf.parse_protein_name("prot_101_140/1_10", repeat, store)
-    second = gf.parse_protein_name("prot_101_140/16_25", repeat, store)
+    first = gf.parse_protein_name("prot_101_130/1_10", repeat, store)
+    second = gf.parse_protein_name("prot_101_130/16_25", repeat, store)
 
     assert (first, second) == ("prot/101-110", "prot/116-125")
 
     # Gap characters are stripped, and a row shorter than its record still gets coordinates
     # -- legacy truncated this name to the bare accession to fit the old name column.
-    assert gf.parse_protein_name("prot_101_140", f"-{repeat[1:]}...QQQQQ", store) == "prot/102-115"
+    assert gf.parse_protein_name("prot_101_130", f"-{repeat[1:]}...QQQQQ", store) == "prot/102-115"
 
     # A row spanning the whole of an unsliced record keeps the bare accession, which
     # `family_metadata` records as region "-".
@@ -290,7 +292,39 @@ def test_parse_protein_name_resolves_repeats_within_their_envelope() -> None:
     assert gf.parse_protein_name("prot", repeat, whole) == "prot"
 
     with pytest.raises(ValueError, match="not in its envelope"):
-        gf.parse_protein_name("prot_101_140/1_10", "WWWWWWWWWW", store)
+        gf.parse_protein_name("prot_101_130/1_10", "WWWWWWWWWW", store)
+
+
+def test_underscores_in_protein_names_are_not_mistaken_for_slice_bounds() -> None:
+    """A protein name may contain underscores; only real slice bounds may be stripped.
+
+    Three names the three-field `split("_")` test got wrong. Each was reported by a user
+    running the tool on a database whose accessions are not bare MGnifams integers.
+    """
+    repeat = "MKVLAAGIVG"
+
+    # A slice of a protein whose own name contains underscores. Legacy kept only the first
+    # field, renaming every row of the family to `contig`.
+    sliced = FakeSequences({"contig_1_gene_2_88_117": f"{repeat}QQQQQ{repeat}QQQQQ"})
+    assert (
+        gf.parse_protein_name("contig_1_gene_2_88_117/16_25", repeat, sliced)
+        == "contig_1_gene_2/103-112"
+    )
+
+    # Non-numeric trailing fields are not bounds. This reached `int()` and raised, and
+    # `family_guard` recorded the whole family as an internal-error discard.
+    named = FakeSequences({"contig_1_gene_x": f"{repeat}QQQQQ"})
+    assert gf.parse_protein_name("contig_1_gene_x", repeat, named) == "contig_1_gene_x/1-10"
+    assert gf.parse_protein_name("contig_1_gene_x", f"{repeat}QQQQQ", named) == "contig_1_gene_x"
+
+    # Numeric trailing fields that do not span the record are part of the name, not bounds.
+    # 34 - 12 + 1 is 23; the record is 15 residues, so `scaffold_12_34` is a whole protein.
+    coincidental = FakeSequences({"scaffold_12_34": f"{repeat}QQQQQ"})
+    assert gf.parse_protein_name("scaffold_12_34", repeat, coincidental) == "scaffold_12_34/1-10"
+
+    # The span test is the whole disambiguator: same name, and now the bounds do fit.
+    real_slice = FakeSequences({"scaffold_12_34": f"{repeat}{repeat}QQQ"})
+    assert gf.parse_protein_name("scaffold_12_34", repeat, real_slice) == "scaffold/12-21"
 
 
 def test_seed_membership_counts_distinct_proteins_on_both_sides() -> None:
