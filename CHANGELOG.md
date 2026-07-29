@@ -34,18 +34,22 @@ version ranges instead — may produce different results on a different resoluti
 
 - An explicit `--fasta_index` is now used exactly as given and never rebuilt, which makes
   a single index safely shareable across parallel chunk tasks — the case the flag exists
-  for. `resolve_index` previously rebuilt any index older than its FASTA, treating a
-  caller-supplied path as a cache it owned. Two consequences, both reachable in an
-  ordinary Nextflow run against an index from an upstream `HMMER_ESLSFETCHINDEX` task:
+  for. `resolve_index` previously rebuilt any index whose mtime predated its FASTA's,
+  treating a caller-supplied path as a cache it owned. An mtime comparison is not a
+  staleness signal for a path this process did not create, and two consequences followed:
 
-  - `Path.stat()` follows symlinks, so the mtime test compared the two *staged
-    originals*. A resumed run whose FASTA task re-ran while the index task stayed cached
-    made every parallel chunk silently re-index the whole database — precisely the cost
-    `--fasta_index` is meant to avoid. The shared index itself was never corrupted
-    (`os.replace` hits the staged symlink, not its target), only the work wasted.
-  - An index on a read-only reference mount could not be rebuilt at all: `build_ssi_index`
-    creates its scratch directory beside the destination, so the run died with a
-    `PermissionError` from `mkdtemp` after the chunk had already started.
+  - Copying, restoring from a backup or archive, or rebuilding the FASTA from identical
+    bytes all reorder the two timestamps without invalidating anything. `Path.stat()`
+    also follows symlinks, so a linked index reports its *target's* timestamp rather than
+    the link's, and the FASTA and the index may be linked from unrelated places whose
+    relative order says nothing about whether one describes the other. Every concurrent
+    chunk sharing the index then re-indexed the whole database at once — precisely the
+    cost `--fasta_index` is meant to avoid. The shared index itself was never corrupted
+    (`os.replace` hits the link, not its target), only the work wasted.
+  - An index kept somewhere the process cannot write — a shared reference directory, a
+    read-only mount — could not be rebuilt at all: `build_ssi_index` creates its scratch
+    directory beside the destination, so the run died with a `PermissionError` from
+    `mkdtemp` after the chunk had already started.
 
   A missing `--fasta_index` is now rejected by `validate_inputs` as a typo instead of
   being absorbed as a build at the misspelled path, and an index that does not match its
