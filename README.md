@@ -132,11 +132,22 @@ One file per chunk, so flat in the output root:
 | `<chunk>_families.tsv` | `family_id<TAB>sequence` |
 | `<chunk>_metadata.csv` | one row per family |
 | `<chunk>_successful.txt` | representatives that produced a family |
-| `<chunk>_discarded.csv` | `representative,reason,value` |
+| `<chunk>_discarded.csv` | one row per discarded cluster |
 | `<chunk>_converged.txt` | ids of successful families that converged naturally |
 | `<chunk>.log` | run log |
 
 Family ids are a 1-based rank among *successful* families, in cluster-file order.
+
+Both CSVs carry a header row, so they load with `pandas.read_csv` as they are:
+
+| file | columns |
+|---|---|
+| `<chunk>_metadata.csv` | `family_id,full_msa_size,protein,region,length,sequence,consensus,converged` |
+| `<chunk>_discarded.csv` | `representative,reason,value` |
+
+`protein` is quoted; `region` is `<start>-<end>` on the parent protein, or `-` when the
+representative spans a whole unsliced record. The header is written before the run
+starts, so a chunk that produces no families still yields a parseable file.
 
 ## Why this is fast now
 

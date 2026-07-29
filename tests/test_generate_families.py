@@ -84,6 +84,17 @@ def run_pipeline(directory: Path, arguments: list[str]) -> Path:
     return directory / "output"
 
 
+def csv_rows(path: Path, header: str) -> list[str]:
+    """Return a per-chunk CSV's data rows, asserting its header line first.
+
+    Every reader of `_metadata.csv` and `_discarded.csv` goes through here, so the header
+    is checked wherever those files are checked rather than in one test of its own.
+    """
+    lines = path.read_text().splitlines()
+    assert lines[0] == header.rstrip("\n")
+    return lines[1:]
+
+
 def scientific_artifacts(directory: Path) -> dict[str, bytes]:
     artifacts = {}
     for path in sorted(directory.glob("**/*")):
@@ -542,7 +553,7 @@ def test_cpus_and_sanity_anchors(
         "1622851798_832_939",
         "4497037939_1_144",
     ]
-    metadata = (baseline_output / "chunk_metadata.csv").read_text().splitlines()
+    metadata = csv_rows(baseline_output / "chunk_metadata.csv", gf.METADATA_HEADER)
     assert [line.split(",")[2].strip('"') for line in metadata] == [
         "782510898",
         "5761513631",
@@ -577,7 +588,7 @@ def test_batch_size_invariance(
     for output in outputs:
         mapping = [
             (line.split(",")[2], line.split(",", 1)[0])
-            for line in (output / "chunk_metadata.csv").read_text().splitlines()
+            for line in csv_rows(output / "chunk_metadata.csv", gf.METADATA_HEADER)
         ]
         assert mapping == [('"782510898"', "1"), ('"5761513631"', "2"), ('"1446399400"', "3")]
 
@@ -677,7 +688,7 @@ def test_one_failing_family_is_discarded_and_the_chunk_survives(
         cli_args(fixture_directory / "clustering.tsv", small_fasta, fasta_index=shared_index),
     )
 
-    discarded = (output / "chunk_discarded.csv").read_text().splitlines()
+    discarded = csv_rows(output / "chunk_discarded.csv", gf.DISCARDED_HEADER)
     failed_rows = [row for row in discarded if "internal error" in row]
     assert failed_rows == [f"{doomed},internal error during artifact writing,0.0"]
     # A comma in the stage text would have split the CSV.
@@ -975,7 +986,7 @@ def test_declared_outputs_parse_and_long_fixture_runs(
             # Every row is renumbered onto its parent protein, with no padding left over.
             for name in msa.names:
                 assert name == name.strip()
-    assert len((baseline_output / "chunk_metadata.csv").read_text().splitlines()) == 3
+    assert len(csv_rows(baseline_output / "chunk_metadata.csv", gf.METADATA_HEADER)) == 3
 
     long_output = run_pipeline(
         tmp_path / "long",
@@ -1003,7 +1014,7 @@ def test_v2_full_tsv_end_to_end(
     v2_output: Path,
 ) -> None:
     representatives = list(gf.load_clusters(fixture_directory / "mgnifams_v2.tsv"))
-    discarded = (v2_output / "v2_discarded.csv").read_text().splitlines()
+    discarded = csv_rows(v2_output / "v2_discarded.csv", gf.DISCARDED_HEADER)
     discarded_representatives = {line.split(",", 1)[0] for line in discarded}
     successful = (v2_output / "v2_successful.txt").read_text().splitlines()
 
@@ -1020,7 +1031,7 @@ def test_v2_full_tsv_end_to_end(
         str(family_id) for family_id in range(5, 13)
     ]
 
-    metadata = (v2_output / "v2_metadata.csv").read_text().splitlines()
+    metadata = csv_rows(v2_output / "v2_metadata.csv", gf.METADATA_HEADER)
     assert [line.split(",", 1)[0] for line in metadata] == [str(i) for i in range(1, 13)]
     assert len((v2_output / "v2_families.tsv").read_text().splitlines()) == 405
     for directory in gf.FAMILY_DIRECTORIES:

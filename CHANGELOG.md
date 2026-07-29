@@ -17,6 +17,21 @@ version ranges instead — may produce different results on a different resoluti
 
 ## [1.1.0.dev0] - unreleased
 
+### Changed
+
+- **Breaking:** `<chunk>_metadata.csv` and `<chunk>_discarded.csv` now start with a header
+  row, so both load with `pandas.read_csv` without `header=None` and a hand-maintained
+  `names=`. Any reader that does not skip it will treat the header as data.
+
+  ```
+  family_id,full_msa_size,protein,region,length,sequence,consensus,converged
+  representative,reason,value
+  ```
+
+  Column order is unchanged — only the row is new. Headers are written by `main` before
+  the first batch rather than by `emit_family`, so a chunk that produces no families and
+  a chunk that discards nothing both still yield a parseable file instead of an empty one.
+
 ### Fixed
 
 - Protein names containing underscores are no longer misread as slice bounds. A database

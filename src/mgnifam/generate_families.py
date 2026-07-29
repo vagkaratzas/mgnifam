@@ -61,6 +61,10 @@ CHUNK_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
 # Per-family artifacts: one file per family, so they get a directory each. Everything
 # else is a single file per chunk and lives flat in the output root as `<chunk>_*`.
 FAMILY_DIRECTORIES = ("seed_msa", "full_msa", "hmm", "rf")
+# Header rows for the two per-chunk CSVs, written by `main` before any result. Column
+# order is the order `emit_family` writes, and must be changed with it.
+METADATA_HEADER = "family_id,full_msa_size,protein,region,length,sequence,consensus,converged\n"
+DISCARDED_HEADER = "representative,reason,value\n"
 # Gives every `configure_logger` call its own name in the `logging` cache. See its docstring.
 _logger_serial = itertools.count()
 
@@ -1078,6 +1082,10 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                     deterministic_gzip_text(root / f"{options.chunk_num}_reps.fasta.gz")
                 ),
             )
+            # Written here rather than in `emit_family`, which runs per family: a chunk
+            # that produces no families at all still gets a readable, parseable CSV.
+            writers.family_metadata.write(METADATA_HEADER)
+            writers.discarded_clusters.write(DISCARDED_HEADER)
             success_count = 0
             processed = 0
             for batch_number, batch in enumerate(
