@@ -8,6 +8,7 @@
 # mgnifam
 
 [![PyPI](https://img.shields.io/pypi/v/mgnifam)](https://pypi.org/project/mgnifam/)
+[![Bioconda](https://img.shields.io/conda/vn/bioconda/mgnifam)](https://bioconda.github.io/recipes/mgnifam/README.html#package-package%20&#x27;mgnifam&#x27;)
 
 Iterative HMM-based protein family generation over very large sequence databases.
 
