@@ -184,7 +184,7 @@ stopped:
 
 | Code | Meaning |
 |---|---|
-| `0` | Chunk completed. Every family landed on exactly one side of the split. Output is complete and safe to consume. |
+| `0` | Chunk completed. Every family landed on exactly one side of the split (discarded or successful). Output is complete and safe to consume. |
 | `1` | Fatal: the run died before finishing. **Output is incomplete and must not be consumed** — re-run the chunk. This is what a dead output sink (ENOSPC, EIO) produces, because the discard re-emit cannot record its own failure. |
 | `2` | Usage error from `argparse`. Nothing ran. |
 | `3` | Chunk completed, but one or more families died of an internal error and were recorded as discards. Output is complete and self-consistent, but those clusters produced no family — re-run the chunk once the cause is fixed, or accept the loss. |
