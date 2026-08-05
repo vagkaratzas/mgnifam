@@ -57,6 +57,8 @@ import pytrimal
 
 ALPHABET = pyhmmer.easel.Alphabet.amino()
 MAX_ROUNDS = 3
+INTERNAL_ERROR_PREFIX = "internal error during "
+EXIT_CRASHED_FAMILIES = 3
 CHUNK_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
 # Per-family artifacts: one file per family, so they get a directory each. Everything
 # else is a single file per chunk and lives flat in the output root as `<chunk>_*`.
@@ -75,6 +77,17 @@ class DuplicateSequenceName(ValueError):
 
 class IndexMismatchError(RuntimeError):
     """Raised when an SSI index returns a record under the wrong key."""
+
+
+class ChunkCorrupted(Exception):
+    """A failure that has left output no discard row can reconcile.
+
+    `family_guard` contains a per-family failure by recording a discard, which is only
+    honest while the family has written nothing a discard contradicts. Past the first
+    shared append, or after a rollback that could not remove what it wrote, that is no
+    longer true and the chunk is not salvageable -- so this bypasses containment and
+    the run exits 1 rather than claiming a coherent exit 3.
+    """
 
 
 class Sequence(NamedTuple):
@@ -636,6 +649,11 @@ class Family:
         self.state = FamilyState.DISCARDED
         self.discard_reason = reason
         self.discard_value = value
+        self.seed_msa = None
+        self.full_msa = None
+        self.hmm = None
+        self.records = []
+        self.total_checked_sequences = set()
 
     def initialise(self, indexed_sequences: IndexedSequences, cpus: int) -> None:
         """Build the first seed MSA from the cluster's own members.
@@ -803,10 +821,12 @@ def family_guard(family: Family, logger: logging.Logger, stage: str) -> Generato
     """
     try:
         yield
+    except ChunkCorrupted:
+        raise
     except Exception:
         logger.exception("family %s failed during %s", family.representative, stage)
         # Commas would split the discarded-clusters CSV; `stage` is caller-supplied text.
-        family.discard(f"internal error during {stage}".replace(",", " "), 0.0)
+        family.discard(f"{INTERNAL_ERROR_PREFIX}{stage}".replace(",", " "), 0.0)
 
 
 def emit_family(
@@ -824,15 +844,16 @@ def emit_family(
     never receive an id or appear in that file.
 
     Every family leaves here as exactly one of discarded or generated, never both and
-    never neither, because `family_guard` in `main` turns a failure here into a discard
-    and re-emits. Two things keep that true:
+    never neither, because `family_guard` in `main` turns a containable failure here into
+    a discard and re-emits. Two things keep that true:
 
     * Write order. Everything that can raise -- the renumbering, the row-count check,
       and the per-family files, each its own `open`/`write`/`close` -- happens before
-      the first append to a shared per-chunk handle, and the shared appends then run
-      uninterrupted, so a representative cannot reach both `successful` and `discarded`.
+      the first append to a shared per-chunk handle. A failure after that boundary raises
+      `ChunkCorrupted`, because a discard could put the representative on both sides.
     * Rollback. A failure part-way through the per-family files unlinks the ones already
-      written, so a family recorded as discarded leaves no artifacts claiming otherwise.
+      written. If an unlink fails, `ChunkCorrupted` prevents the orphaned artifacts from
+      being labelled as coherent discarded output.
 
     Convergence is a property of a generated family, not a third outcome: `ever_converged`
     is read only on the success path, and a family that converged and then failed a check
@@ -900,31 +921,44 @@ def emit_family(
             written.append(path)
             with deterministic_gzip_binary(path) as handle:
                 msa.write(handle, format="pfam")
-    except Exception:
+    except Exception as error:
+        rollback_failures = []
         for path in written:
-            path.unlink(missing_ok=True)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                rollback_failures.append(path)
+        if rollback_failures:
+            failed = ", ".join(map(str, rollback_failures))
+            raise ChunkCorrupted(f"failed to remove rolled-back artifacts: {failed}") from error
         raise
 
-    if family.ever_converged:
-        writers.converged_families.write(f"{provisional_id}\n")
-    writers.successful_clusters.write(f"{family.representative}\n")
-    # `names` are `str`: this MSA was built by `renumber_msa` out of `TextSequence`s. Only
-    # pytrimal hands back `bytes`, and that is decoded in `pytrimal_to_pyhmmer`.
-    for row_number, (sequence_name, row) in enumerate(
-        zip(renumbered_full.names, renumbered_full.alignment, strict=True)
-    ):
-        writers.refined_families.write(f"{provisional_id}\t{sequence_name}\n")
-        if row_number == 0:
-            # Row 0 is the representative: hits arrive in HMMER's ranking order.
-            residues = re.sub(r"[.\-~]", "", row).upper()
-            protein, _, region = sequence_name.partition("/")
-            writers.family_metadata.write(
-                f'{provisional_id},{family.full_msa_num_seqs},"{protein}",{region or "-"},'
-                f"{len(residues)},{residues},{final_hmm.consensus},{family.ever_converged}\n"
-            )
-            writers.family_representatives.write(
-                f">{sequence_name}\t{chunk}_{provisional_id}\n{residues}\n"
-            )
+    try:
+        if family.ever_converged:
+            writers.converged_families.write(f"{provisional_id}\n")
+        writers.successful_clusters.write(f"{family.representative}\n")
+        # `names` are `str`: this MSA was built by `renumber_msa` out of `TextSequence`s. Only
+        # pytrimal hands back `bytes`, and that is decoded in `pytrimal_to_pyhmmer`.
+        for row_number, (sequence_name, row) in enumerate(
+            zip(renumbered_full.names, renumbered_full.alignment, strict=True)
+        ):
+            writers.refined_families.write(f"{provisional_id}\t{sequence_name}\n")
+            if row_number == 0:
+                # Row 0 is the representative: hits arrive in HMMER's ranking order.
+                residues = re.sub(r"[.\-~]", "", row).upper()
+                protein, _, region = sequence_name.partition("/")
+                writers.family_metadata.write(
+                    f'{provisional_id},{family.full_msa_num_seqs},"{protein}",'
+                    f"{region or '-'},{len(residues)},{residues},{final_hmm.consensus},"
+                    f"{family.ever_converged}\n"
+                )
+                writers.family_representatives.write(
+                    f">{sequence_name}\t{chunk}_{provisional_id}\n{residues}\n"
+                )
+    except Exception as error:
+        raise ChunkCorrupted(
+            f"shared output commit failed for family {family.representative}"
+        ) from error
     return provisional_id
 
 
@@ -1148,6 +1182,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
             writers.discarded_clusters.write(DISCARDED_HEADER)
             success_count = 0
             processed = 0
+            crashed = 0
             for batch_number, batch in enumerate(
                 # strict=False: the last wave is short whenever the cluster count is not a
                 # multiple of the batch size, which is the normal case, not an error.
@@ -1224,11 +1259,17 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                         )
                         emitted = True
                     if not emitted:
-                        # The guard turned the failure into a discard, and a discard is a
-                        # result: emit it. `emit_family` computes before it writes, so the
-                        # failed attempt left nothing behind and this writes only the row.
+                        # The guard made the failure a discard, and a discard is a result:
+                        # emit it. This stays outside the guard because a dead output sink
+                        # cannot record its own failure and must exit 1 rather than claim
+                        # coherent output.
                         emit_family(family, success_count, options.chunk_num, writers)
                 processed += len(active)
+                crashed += sum(
+                    1
+                    for family in active
+                    if family.discard_reason.startswith(INTERNAL_ERROR_PREFIX)
+                )
                 # Logged after the emit loop, so everything it counts is already on disk.
                 logger.info(
                     "batch=%d/%d written clusters=%d/%d successful=%d discarded=%d elapsed=%.1fs",
@@ -1241,12 +1282,18 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                     time.monotonic() - started,
                 )
         logger.info(
-            "DONE. clusters=%d successful=%d discarded=%d elapsed=%.1fs",
+            "DONE. clusters=%d successful=%d discarded=%d crashed=%d elapsed=%.1fs",
             processed,
             success_count,
             processed - success_count,
+            crashed,
             time.monotonic() - started,
         )
+        if crashed:
+            raise SystemExit(EXIT_CRASHED_FAMILIES)
+    except ChunkCorrupted:
+        logger.exception("chunk output is corrupted and must not be consumed")
+        raise SystemExit(1) from None
     finally:
         for handler in logger.handlers:
             handler.close()

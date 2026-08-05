@@ -198,3 +198,57 @@ paths it could not remove, so the log says which orphans are on disk rather than
 some are. Folded into the plan.
 
 Converged in 3 rounds. Awaiting the user's sign-off before any implementation code.
+
+## Act 3 — Build
+
+Builder: Codex (`gpt-5.6-sol`), codex-cli 0.146.0, thread `019fd1e6-afef-7201-be67-2bc0e867dac5`.
+Spec: `PLAN-2.1.0.md`, frozen. Baseline: `ca5b526`, clean tree. MAX_FIX_ROUNDS=2, used 1.
+
+### Round 1 — Codex build
+
+Implemented all six Approach steps: the `INTERNAL_ERROR_PREFIX` / `EXIT_CRASHED_FAMILIES`
+constants, `ChunkCorrupted` with `family_guard` bypass, the shared-append fence, rollback
+aggregation naming unremovable paths, `discard()` releasing the heavyweight fields, the
+per-batch `crashed` counter, `crashed=` in the `DONE.` line, `SystemExit(3)`, five new
+tests, and the CHANGELOG / README / AGENTS.md updates. Reported "deviations: none".
+
+### Claude's verdict — round 1
+
+Proof re-run independently: 47 passed, ruff check and format clean. Logic correct on the
+diff read — the fence, the rollback aggregation and the `discard()` release all match the
+spec, and `SystemExit(3)` is raised inside the `try` so the `ChunkCorrupted` handler cannot
+swallow it. Two problems sent back:
+
+1. **A deviation reported as none.** `test_legitimate_discard_reasons_do_not_collide_with_internal_errors`
+   hardcoded six reason strings and asserted those literals did not start with the prefix —
+   a fact about its own input. It could never fail for the reason it exists, which the spec
+   stated as "a future copy edit that would silently disarm the exit code fails the suite".
+   The hardcoded list was also only accidentally complete: the two rep-length reasons are
+   returned by `check_rep_length` and reach `discard()` via `*reason`, never as literal
+   arguments, so even an AST walk restricted to `discard()` call arguments would have
+   missed them.
+2. **~200 lines of avoidable diff.** The batch loop had been wrapped in a new nested `try:`
+   purely to catch `ChunkCorrupted`, reindenting roughly 100 untouched lines so the whole
+   loop read as changed. `main` already had an outer `try: ... finally:` that could carry
+   the handler with no reindentation.
+
+### Round 2 — Codex fixes
+
+Both applied. The collision test now parses the module with `ast` and asserts no string
+constant anywhere in it starts with the prefix, excluding the prefix's own definition by
+node identity — exact, because `family_guard` builds the reason as an f-string
+(`ast.JoinedStr`), which never appears as a plain `Constant`. The nested `try` is gone and
+the handler moved to the existing outer `try`.
+
+### Claude's verdict — round 2, accepted
+
+Proof re-run: 47 passed, ruff clean. Source diff fell from 279 to 111 lines and the batch
+loop is back to showing only the `crashed` accumulation and the reworded re-emit comment.
+
+Mutation-checked the replacement test rather than trusting that it now works: replacing
+`"few seed sequences remained"` with `"internal error during seed check"` in the module
+source flips the assertion from pass to fail, so the test detects exactly the copy edit it
+was written to catch.
+
+Converged: Act 1 grill (4 decisions) -> Act 2 review (3 rounds, APPROVED) -> Act 3 build
+(2 rounds). Awaiting the user's diff sign-off; nothing committed.

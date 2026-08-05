@@ -17,6 +17,32 @@ version ranges instead — may produce different results on a different resoluti
 
 ## [2.1.0.dev0] - unreleased
 
+### Changed
+
+- **Breaking:** a chunk that completes after containing one or more internal family
+  errors now exits 3 instead of 0. Every crashed family is still recorded in
+  `<chunk>_discarded.csv`, and the chunk continues through all remaining families before
+  exiting, so its output is complete and self-consistent. Callers that previously ignored
+  the status see unchanged artifacts; callers that check it must now re-run the degraded
+  chunk or explicitly accept those lost clusters. The final `DONE.` log line includes the
+  number of crashed families. Exit 1 remains fatal and marks incomplete output that must
+  not be consumed; exit 2 remains an `argparse` usage error.
+
+### Fixed
+
+- A failure after a successful family first appended to shared chunk output could be
+  contained as a discard, putting the same family in generated and discarded outputs.
+  Shared-output commit failures now bypass per-family containment and exit 1, so exit 3
+  structurally means the degraded output is coherent.
+- A failed per-family artifact write could leave earlier artifacts on disk beside its
+  discard row. Artifact writes now roll back every path already attempted; a rollback
+  failure names the paths it could not remove and exits 1 without masking the original
+  write error.
+- Discarded families now release their seed and full alignments, HMM, hit records, and
+  checked-sequence set immediately. This prevents a batch from pinning its dominant memory
+  objects and makes containment of an oversized family's `MemoryError` capable of
+  reclaiming that memory before processing continues.
+
 ## [2.0.0] - 2026/07/29
 
 A major version because two documented behaviours change: the two per-chunk CSVs gain a

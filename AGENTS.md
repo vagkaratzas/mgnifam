@@ -46,7 +46,10 @@ the rank among *successful* families in cluster-file order, so nothing may be wr
 until a family's fate is known. All writing happens in `emit_family()`, called in cluster
 order. A family that converges in round 1 must not record itself ahead of an earlier
 family still running in round 3. Discarded families must never appear in
-`converged_families`.
+`converged_families`. Every family must leave `emit_family()` on exactly one side of the
+generated/discarded split; an internal crash is recorded as a discard so the chunk can
+finish, then also fails the completed run with exit 3. Exit 1 means containment could not
+leave coherent output, so that output must not be consumed.
 
 ## Behaviour that looks like a bug and is not
 
