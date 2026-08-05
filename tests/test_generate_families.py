@@ -14,6 +14,7 @@ deleting them as redundant.
 """
 
 import argparse
+import ast
 import contextlib
 import gc
 import gzip
@@ -564,11 +565,144 @@ def test_failed_artifact_write_leaves_no_row_in_the_shared_files(
     ):
         assert handle.getvalue() == ""
 
+    # The per-family files the failed emit did manage to write are rolled back, so the
+    # discard row below is not contradicted by a `chunk_1.*` artifact left on disk. That
+    # matters when no later family in the chunk succeeds to overwrite the name.
+    for directory in gf.FAMILY_DIRECTORIES:
+        assert list((tmp_path / directory).iterdir()) == []
+
     # What `main` does next: the guard discards, and the re-emit writes only that row.
     family.discard("internal error during artifact writing", 0.0)
     assert gf.emit_family(family, 0, "chunk", writers) == 0
     assert writers.successful_clusters.getvalue() == ""
     assert writers.discarded_clusters.getvalue() == "a,internal error during artifact writing,0.0\n"
+
+
+def test_failed_artifact_rollback_attempts_every_unlink_and_preserves_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed rollback makes the chunk corrupt without hiding the write failure.
+
+    Stopping on the first unlink error strands every later artifact, while raising that
+    unlink error loses the failure that triggered rollback and sends the operator after
+    the wrong cause.
+    """
+    store = FakeSequences({"a": "AAAA", "b": "AAAT"})
+    for directory in gf.FAMILY_DIRECTORIES:
+        (tmp_path / directory).mkdir()
+    writers = gf.Writers(
+        root=tmp_path,
+        indexed=store,
+        refined_families=io.StringIO(),
+        discarded_clusters=io.StringIO(),
+        successful_clusters=io.StringIO(),
+        converged_families=io.StringIO(),
+        family_metadata=io.StringIO(),
+        family_representatives=io.StringIO(),
+    )
+    family = gf.Family(
+        "a",
+        ["a", "b"],
+        state=gf.FamilyState.SUCCESSFUL,
+        seed_msa=text_msa(["a", "b"], ["AAAA", "AAAT"], "xxxx").digitize(gf.ALPHABET),
+        full_msa=text_msa(["a", "b"], ["AAAA", "AAAT"], "xxxx"),
+        full_msa_num_seqs=2,
+    )
+
+    original_gzip = gf.deterministic_gzip_binary
+    remaining = 2
+
+    def failing_write(path: Path):  # type: ignore[no-untyped-def]
+        nonlocal remaining
+        remaining -= 1
+        if remaining == 0:
+            raise OSError("original artifact failure")
+        return original_gzip(path)
+
+    original_unlink = Path.unlink
+    attempted: list[Path] = []
+
+    def failing_unlink(path: Path, *, missing_ok: bool = False) -> None:
+        attempted.append(path)
+        if path.parent.name in {"rf", "hmm"}:
+            raise OSError("rollback failure")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(gf, "deterministic_gzip_binary", failing_write)
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+    with pytest.raises(gf.ChunkCorrupted) as excinfo:
+        gf.emit_family(family, 0, "chunk", writers)
+
+    assert [path.parent.name for path in attempted] == ["rf", "hmm", "seed_msa"]
+    assert "rf/chunk_1.txt" in str(excinfo.value)
+    assert "hmm/chunk_1.hmm.gz" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, OSError)
+    assert str(excinfo.value.__cause__) == "original artifact failure"
+
+
+def test_mismatched_full_msa_is_rejected_before_the_shared_appends(tmp_path: Path) -> None:
+    """The row loop's `zip(strict=True)` runs after the shared handles are appended to.
+
+    Left to fire there, it would raise with the representative already in `successful`,
+    and the re-emit would then add it to `discarded` as well -- the one raise inside the
+    region `emit_family` needs to be uninterrupted.
+    """
+    store = FakeSequences({"a": "AAAA", "b": "AAAT"})
+    for directory in gf.FAMILY_DIRECTORIES:
+        (tmp_path / directory).mkdir()
+    writers = gf.Writers(
+        root=tmp_path,
+        indexed=store,
+        refined_families=io.StringIO(),
+        discarded_clusters=io.StringIO(),
+        successful_clusters=io.StringIO(),
+        converged_families=io.StringIO(),
+        family_metadata=io.StringIO(),
+        family_representatives=io.StringIO(),
+    )
+    full_msa = text_msa(["a", "b"], ["AAAA", "AAAT"], "xxxx")
+    family = gf.Family(
+        "a",
+        ["a", "b"],
+        state=gf.FamilyState.SUCCESSFUL,
+        seed_msa=text_msa(["a", "b"], ["AAAA", "AAAT"], "xxxx").digitize(gf.ALPHABET),
+        full_msa=full_msa,
+        full_msa_num_seqs=2,
+        ever_converged=True,
+    )
+
+    class Mismatched:
+        """A renumbered MSA carrying one more name than it has rows.
+
+        Writable, so that without the check the emit runs all the way to the shared
+        appends and this test fails on the contradiction rather than on a stub.
+        """
+
+        def __init__(self, msa):  # type: ignore[no-untyped-def]
+            self._msa = msa
+            self.names = [*msa.names, "c"]
+            self.alignment = list(msa.alignment)
+
+        def write(self, handle, format):  # type: ignore[no-untyped-def]
+            self._msa.write(handle, format=format)
+
+    monkeypatch = pytest.MonkeyPatch()
+    with monkeypatch.context() as patched:
+        patched.setattr(gf, "renumber_msa", lambda msa, name, indexed: Mismatched(msa))
+        with pytest.raises(ValueError, match="mismatched names and rows"):
+            gf.emit_family(family, 0, "chunk", writers)
+
+    for handle in (
+        writers.successful_clusters,
+        writers.converged_families,
+        writers.refined_families,
+        writers.family_metadata,
+        writers.family_representatives,
+        writers.discarded_clusters,
+    ):
+        assert handle.getvalue() == ""
+    for directory in gf.FAMILY_DIRECTORIES:
+        assert list((tmp_path / directory).iterdir()) == []
 
 
 def test_cpus_and_sanity_anchors(
@@ -723,10 +857,14 @@ def test_one_failing_family_is_discarded_and_the_chunk_survives(
         return original(msa, family_name, indexed)
 
     monkeypatch.setattr(gf, "renumber_msa", explode)
-    output = run_pipeline(
-        tmp_path / "guarded",
-        cli_args(fixture_directory / "clustering.tsv", small_fasta, fasta_index=shared_index),
-    )
+    guarded = tmp_path / "guarded"
+    with pytest.raises(SystemExit) as excinfo:
+        run_pipeline(
+            guarded,
+            cli_args(fixture_directory / "clustering.tsv", small_fasta, fasta_index=shared_index),
+        )
+    assert excinfo.value.code == gf.EXIT_CRASHED_FAMILIES
+    output = guarded / "output"
 
     discarded = csv_rows(output / "chunk_discarded.csv", gf.DISCARDED_HEADER)
     failed_rows = [row for row in discarded if "internal error" in row]
@@ -743,6 +881,142 @@ def test_one_failing_family_is_discarded_and_the_chunk_survives(
     ids = sorted(int(path.name.split("_")[1].split(".")[0]) for path in (output / "hmm").iterdir())
     assert ids == list(range(1, len(remaining) + 1))
     assert "synthetic failure" in (output / "chunk.log").read_text()
+
+
+def test_clean_run_returns_and_discard_reasons_are_legitimate(
+    tmp_path: Path,
+    fixture_directory: Path,
+    small_fasta: Path,
+    shared_index: Path,
+) -> None:
+    output = run_pipeline(
+        tmp_path / "clean-exit",
+        cli_args(fixture_directory / "clustering.tsv", small_fasta, fasta_index=shared_index),
+    )
+    reasons = [
+        row.split(",", 2)[1]
+        for row in csv_rows(output / "chunk_discarded.csv", gf.DISCARDED_HEADER)
+    ]
+    assert all(not reason.startswith(gf.INTERNAL_ERROR_PREFIX) for reason in reasons)
+    assert "crashed=0" in (output / "chunk.log").read_text()
+
+
+def test_console_script_returns_three_after_a_contained_family_crash(
+    tmp_path: Path,
+    fixture_directory: Path,
+    small_fasta: Path,
+    shared_index: Path,
+) -> None:
+    """The degraded status must survive both dispatch and the installed wrapper."""
+    injector = tmp_path / "injector"
+    injector.mkdir()
+    (injector / "sitecustomize.py").write_text(
+        "from mgnifam import generate_families as gf\n"
+        "original = gf.renumber_msa\n"
+        "failed = False\n"
+        "def explode(msa, family_name, indexed):\n"
+        "    global failed\n"
+        "    if not failed:\n"
+        "        failed = True\n"
+        "        raise RuntimeError('subprocess synthetic failure')\n"
+        "    return original(msa, family_name, indexed)\n"
+        "gf.renumber_msa = explode\n"
+    )
+    run_directory = tmp_path / "console-crash"
+    run_directory.mkdir()
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        value for value in (str(injector), environment.get("PYTHONPATH")) if value
+    )
+    result = subprocess.run(
+        [
+            "mgnifam",
+            "generate_families",
+            *cli_args(
+                fixture_directory / "clustering.tsv",
+                small_fasta,
+                fasta_index=shared_index,
+            ),
+        ],
+        cwd=run_directory,
+        env=environment,
+        check=False,
+    )
+
+    assert result.returncode == gf.EXIT_CRASHED_FAMILIES
+    output = run_directory / "output"
+    assert "crashed=1" in (output / "chunk.log").read_text()
+    successful = (output / "chunk_successful.txt").read_text().splitlines()
+    discarded = csv_rows(output / "chunk_discarded.csv", gf.DISCARDED_HEADER)
+    assert len(successful) + len(discarded) == len(
+        gf.load_clusters(fixture_directory / "clustering.tsv")
+    )
+    ids = sorted(int(path.name.split("_")[1].split(".")[0]) for path in (output / "hmm").iterdir())
+    assert ids == list(range(1, len(successful) + 1))
+
+
+def test_legitimate_discard_reasons_do_not_collide_with_internal_errors() -> None:
+    """A legitimate discard must never be mistaken for a contained family crash.
+
+    Deriving literals from the module makes a future reason copy edit fail here; a
+    hand-maintained list could stay green while silently changing a clean chunk's exit.
+    """
+    tree = ast.parse(Path(gf.__file__).read_text())
+    prefix_definition = next(
+        statement.value
+        for statement in tree.body
+        if isinstance(statement, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "INTERNAL_ERROR_PREFIX"
+            for target in statement.targets
+        )
+    )
+    strings = (
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node is not prefix_definition
+    )
+    assert all(not value.startswith(gf.INTERNAL_ERROR_PREFIX) for value in strings)
+
+
+def test_shared_append_failure_is_fatal_not_a_contained_discard(
+    tmp_path: Path,
+    fixture_directory: Path,
+    small_fasta: Path,
+    shared_index: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once shared output changes, a discard cannot make the chunk coherent again."""
+    original = gf.emit_family
+    trapped = False
+
+    class FailedSuccessfulWrite:
+        def write(self, _value: str) -> None:
+            raise OSError("successful output failed")
+
+    def fail_after_converged_append(family, success_count, chunk, writers):  # type: ignore[no-untyped-def]
+        nonlocal trapped
+        if family.ever_converged and not trapped:
+            trapped = True
+            writers.successful_clusters = FailedSuccessfulWrite()
+        return original(family, success_count, chunk, writers)
+
+    monkeypatch.setattr(gf, "emit_family", fail_after_converged_append)
+    run_directory = tmp_path / "corrupt"
+    with pytest.raises(SystemExit) as excinfo:
+        run_pipeline(
+            run_directory,
+            cli_args(fixture_directory / "clustering.tsv", small_fasta, fasta_index=shared_index),
+        )
+
+    assert excinfo.value.code == 1
+    output = run_directory / "output"
+    assert (output / "chunk_converged.txt").read_text()
+    discarded = csv_rows(output / "chunk_discarded.csv", gf.DISCARDED_HEADER)
+    assert all(gf.INTERNAL_ERROR_PREFIX not in row for row in discarded)
+    assert "chunk output is corrupted" in (output / "chunk.log").read_text()
 
 
 def test_family_guard_contains_only_exceptions() -> None:
