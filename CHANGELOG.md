@@ -15,6 +15,8 @@ That guarantee is scoped to the dependency set resolved in the committed `uv.loc
 and serialised bytes, so installing from PyPI — which resolves within the declared
 version ranges instead — may produce different results on a different resolution.
 
+## [2.1.0.dev0] - unreleased
+
 ## [2.0.0] - 2026/07/29
 
 A major version because two documented behaviours change: the two per-chunk CSVs gain a

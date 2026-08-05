@@ -823,11 +823,20 @@ def emit_family(
     Only successful families are written to `converged_families`; discarded families
     never receive an id or appear in that file.
 
-    A representative must never appear in both `successful` and `discarded`, because
-    `family_guard` in `main` turns a failure here into a discard and re-emits. What keeps
-    that true is the write order: everything that can raise -- the renumbering, and the
-    per-family files, each its own `open`/`write`/`close` -- happens before the first
-    append to a shared per-chunk handle, and the shared appends then run uninterrupted.
+    Every family leaves here as exactly one of discarded or generated, never both and
+    never neither, because `family_guard` in `main` turns a failure here into a discard
+    and re-emits. Two things keep that true:
+
+    * Write order. Everything that can raise -- the renumbering, the row-count check,
+      and the per-family files, each its own `open`/`write`/`close` -- happens before
+      the first append to a shared per-chunk handle, and the shared appends then run
+      uninterrupted, so a representative cannot reach both `successful` and `discarded`.
+    * Rollback. A failure part-way through the per-family files unlinks the ones already
+      written, so a family recorded as discarded leaves no artifacts claiming otherwise.
+
+    Convergence is a property of a generated family, not a third outcome: `ever_converged`
+    is read only on the success path, and a family that converged and then failed a check
+    in `finish` is discarded like any other.
 
     Deliberately not buffered into row lists first. The row loop only formats strings
     onto already-open handles, so a buffer would guard nothing (a `writelines` can flush
@@ -860,18 +869,41 @@ def emit_family(
     indexed = cast(IndexedSequences, writers.indexed)
     renumbered_seed = renumber_msa(seed_msa.textize(), family_name, indexed)
     renumbered_full = renumber_msa(full_msa, family_name, indexed)
+    # Checked here rather than left to the row loop's `zip(strict=True)`: that loop runs
+    # after the shared handles have been appended to, so a raise there would put this
+    # representative in `successful` and then, through the re-emit, in `discarded` too.
+    if len(renumbered_full.names) != len(renumbered_full.alignment):
+        raise ValueError("renumbered full MSA has mismatched names and rows")
 
-    (writers.root / "rf" / f"{family_name}.txt").write_text(seed_msa.reference, encoding="utf-8")
-    with deterministic_gzip_binary(writers.root / "hmm" / f"{family_name}.hmm.gz") as handle:
-        final_hmm.write(handle)
+    # A part-written family is neither generated nor discarded: the discard row the
+    # re-emit writes would be contradicted by the artifacts left on disk beside it. They
+    # are usually overwritten, because a discard does not consume `provisional_id` and
+    # the next successful family reuses the name -- but nothing overwrites them when no
+    # later family in the chunk succeeds. Unlinking on the way out removes the case.
+    written: list[Path] = []
+    try:
+        rf_path = writers.root / "rf" / f"{family_name}.txt"
+        written.append(rf_path)
+        rf_path.write_text(seed_msa.reference, encoding="utf-8")
 
-    for directory, msa in (
-        ("seed_msa", renumbered_seed),
-        ("full_msa", renumbered_full),
-    ):
-        path = writers.root / directory / f"{family_name}.sto.gz"
-        with deterministic_gzip_binary(path) as handle:
-            msa.write(handle, format="pfam")
+        hmm_path = writers.root / "hmm" / f"{family_name}.hmm.gz"
+        written.append(hmm_path)
+        with deterministic_gzip_binary(hmm_path) as handle:
+            final_hmm.write(handle)
+
+        for directory, msa in (
+            ("seed_msa", renumbered_seed),
+            ("full_msa", renumbered_full),
+        ):
+            path = writers.root / directory / f"{family_name}.sto.gz"
+            # Recorded before the write, so a file that failed half-created is removed.
+            written.append(path)
+            with deterministic_gzip_binary(path) as handle:
+                msa.write(handle, format="pfam")
+    except Exception:
+        for path in written:
+            path.unlink(missing_ok=True)
+        raise
 
     if family.ever_converged:
         writers.converged_families.write(f"{provisional_id}\n")

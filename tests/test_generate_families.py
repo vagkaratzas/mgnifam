@@ -564,11 +564,82 @@ def test_failed_artifact_write_leaves_no_row_in_the_shared_files(
     ):
         assert handle.getvalue() == ""
 
+    # The per-family files the failed emit did manage to write are rolled back, so the
+    # discard row below is not contradicted by a `chunk_1.*` artifact left on disk. That
+    # matters when no later family in the chunk succeeds to overwrite the name.
+    for directory in gf.FAMILY_DIRECTORIES:
+        assert list((tmp_path / directory).iterdir()) == []
+
     # What `main` does next: the guard discards, and the re-emit writes only that row.
     family.discard("internal error during artifact writing", 0.0)
     assert gf.emit_family(family, 0, "chunk", writers) == 0
     assert writers.successful_clusters.getvalue() == ""
     assert writers.discarded_clusters.getvalue() == "a,internal error during artifact writing,0.0\n"
+
+
+def test_mismatched_full_msa_is_rejected_before_the_shared_appends(tmp_path: Path) -> None:
+    """The row loop's `zip(strict=True)` runs after the shared handles are appended to.
+
+    Left to fire there, it would raise with the representative already in `successful`,
+    and the re-emit would then add it to `discarded` as well -- the one raise inside the
+    region `emit_family` needs to be uninterrupted.
+    """
+    store = FakeSequences({"a": "AAAA", "b": "AAAT"})
+    for directory in gf.FAMILY_DIRECTORIES:
+        (tmp_path / directory).mkdir()
+    writers = gf.Writers(
+        root=tmp_path,
+        indexed=store,
+        refined_families=io.StringIO(),
+        discarded_clusters=io.StringIO(),
+        successful_clusters=io.StringIO(),
+        converged_families=io.StringIO(),
+        family_metadata=io.StringIO(),
+        family_representatives=io.StringIO(),
+    )
+    full_msa = text_msa(["a", "b"], ["AAAA", "AAAT"], "xxxx")
+    family = gf.Family(
+        "a",
+        ["a", "b"],
+        state=gf.FamilyState.SUCCESSFUL,
+        seed_msa=text_msa(["a", "b"], ["AAAA", "AAAT"], "xxxx").digitize(gf.ALPHABET),
+        full_msa=full_msa,
+        full_msa_num_seqs=2,
+        ever_converged=True,
+    )
+
+    class Mismatched:
+        """A renumbered MSA carrying one more name than it has rows.
+
+        Writable, so that without the check the emit runs all the way to the shared
+        appends and this test fails on the contradiction rather than on a stub.
+        """
+
+        def __init__(self, msa):  # type: ignore[no-untyped-def]
+            self._msa = msa
+            self.names = [*msa.names, "c"]
+            self.alignment = list(msa.alignment)
+
+        def write(self, handle, format):  # type: ignore[no-untyped-def]
+            self._msa.write(handle, format=format)
+
+    monkeypatch = pytest.MonkeyPatch()
+    with monkeypatch.context() as patched:
+        patched.setattr(gf, "renumber_msa", lambda msa, name, indexed: Mismatched(msa))
+        with pytest.raises(ValueError, match="mismatched names and rows"):
+            gf.emit_family(family, 0, "chunk", writers)
+
+    for handle in (
+        writers.successful_clusters,
+        writers.converged_families,
+        writers.refined_families,
+        writers.family_metadata,
+        writers.family_representatives,
+        writers.discarded_clusters,
+    ):
+        assert handle.getvalue() == ""
+    for directory in gf.FAMILY_DIRECTORIES:
+        assert list((tmp_path / directory).iterdir()) == []
 
 
 def test_cpus_and_sanity_anchors(
