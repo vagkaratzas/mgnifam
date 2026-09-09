@@ -17,6 +17,32 @@ version ranges instead — may produce different results on a different resoluti
 
 ## [2.1.0.dev0] - unreleased
 
+### Added
+
+- **`mgnifam update_families`**, a subcommand that refreshes families which already exist as
+  HMMs against a newer, larger database. It searches each stored model rather than
+  re-deriving the family from its original clusters, so a family keeps its identity across
+  releases and picks up every fix in the shared code path.
+
+  `--hmm_input` takes a directory of `.hmm`/`.hmm.gz` files or a single multi-model library;
+  both forms produce identical output. `--skip_refine` recruits once and aligns, leaving the
+  model, seed MSA and RF line untouched; without it the full three-round loop runs.
+
+  A family's name comes from its model's `NAME` field and is preserved verbatim, so
+  `<chunk>_updated_metadata.csv`'s `family_id` column holds a name like `1_7` rather than a
+  rank, and `--chunk_num` labels only the per-chunk aggregate files. Chunks sharing an output
+  root must own disjoint family names.
+
+  `<chunk>_updated_delta.csv` reports one row per family — the model length before and after,
+  round 1's recruitment, the final size, retention, rounds run, and the outcome. `no hits in
+  the new database` is distinguished from `low complexity model - confounding cluster`: the
+  first means the model found nothing in the new release, the second that it found hits and
+  none were long enough.
+
+  `<chunk>_updated_manifest.txt` records the families a chunk owns in an output root, so a
+  later run can clear artifacts that a shrinking rerun would otherwise strand. It is written
+  atomically and must not be deleted between runs.
+
 ### Changed
 
 - **Breaking:** a chunk that completes after containing one or more internal family
@@ -30,6 +56,13 @@ version ranges instead — may produce different results on a different resoluti
 
 ### Fixed
 
+- **Breaking, narrowly:** a failed append to `<chunk>_discarded.csv` now exits 1 instead of
+  being contained and retried. The shared-output hardening below protected the success path
+  only; the discard branch's single append was left outside any boundary, so a failure there
+  was caught by `family_guard`, re-emitted, and the row appended a second time — a partial
+  first write followed by a successful retry duplicated it. Both branches now commit under
+  the same boundary. No clean run is affected, and `generate_families`' output is unchanged
+  byte-for-byte.
 - A failure after a successful family first appended to shared chunk output could be
   contained as a discard, putting the same family in generated and discarded outputs.
   Shared-output commit failures now bypass per-family containment and exit 1, so exit 3

@@ -62,6 +62,8 @@ exclude = [
     "/assets",
     "/PLAN.md",
     "/PLAN-REVIEW-LOG.md",
+    "/PLAN_UPDATE.md",
+    "/PLAN_UPDATE-REVIEW-LOG.md",
     "/.github",
 ]
 

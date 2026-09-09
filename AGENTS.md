@@ -110,6 +110,43 @@ it to `COMMANDS`, and set its parser's `prog` to `"mgnifam <name>"`. Subcommands
 parsers rather than registering with `add_subparsers`, so each stays directly callable and
 testable without the dispatcher. `remove_redundant` and `merge_families` are expected here.
 
+`update_families` imports the algorithm out of `generate_families` and owns only its own
+`main()` loop. **When a third command lands, extract the shared machinery into a
+`_pipeline.py` and make all three thin.** Not before: the shape three commands share is
+worth observing rather than guessing, and `README.md` documents
+`from mgnifam.generate_families import build_ssi_index` as a public entry point that a move
+would break.
+
+## Before you change anything in `update_families.py`
+
+- **A family's identity is its model's `NAME`, and it must reach every output.** Filenames
+  are the easy half. `<chunk>_updated_metadata.csv`, `<chunk>_updated_families.tsv`,
+  `converged.txt` and the `reps.fasta.gz` annotation all carry it too, and the annotation is
+  where a `f"{chunk}_{id}"` reconstruction hid until a review caught it: with `--chunk_num 9`
+  and a preserved `1_7` it wrote `9_1_7`. Guard:
+  `test_identity_is_preserved_in_every_field_not_only_in_filenames`, which deliberately runs
+  a chunk number unrelated to the names.
+- **Family names are untrusted input.** They come from a third-party HMM and are
+  interpolated into artifact paths and unquoted CSV fields. `[A-Za-z0-9._-]+` plus rejecting
+  `.`/`..` closes traversal and CSV-column corruption together. Guard:
+  `test_unsafe_family_names_are_rejected_before_any_output_exists`.
+- **Models are sorted by name, for a directory and a library alike.** Filename order and
+  library order are different orders over the same models, and the aggregates would differ
+  byte-for-byte. Guard:
+  `test_library_and_directory_inputs_agree_despite_adversarial_ordering`.
+- **The ownership record is `<chunk>_updated_manifest.txt`, not `successful.txt`.**
+  `emit_family` writes every per-family artifact before its first shared append, so a
+  `ChunkCorrupted` there strands artifacts with no name in `successful.txt` — and that is
+  exactly the run that exits 1 and must be re-run. Guard:
+  `test_cleanup_survives_a_run_that_never_recorded_its_successes`.
+- **Delta metrics are captured where they are computed.** `discard()` clears the records,
+  model and alignments, and `finish()` holds the membership fraction in a local before it may
+  discard on representative length. Reading them back off the `Family` afterwards silently
+  yields empty columns.
+- Round 1 cannot converge, which is why refine mode needs no stored seed MSA. If that ever
+  changes, `emit_family`'s hand build has nothing to build from on a converged-at-round-1
+  family.
+
 ## Docs that must move together
 
 `README.md`, `CHANGELOG.md`, `AGENTS.md` and the docstrings all describe the same
