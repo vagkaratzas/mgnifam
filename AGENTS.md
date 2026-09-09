@@ -136,16 +136,35 @@ the stage that computes them).
 **What it actually demonstrates: refine mode is not idempotent.** `generate_families` stops
 at convergence or `MAX_ROUNDS` and deliberately skips `advance`'s re-align/trim tail on the
 way out, so a finished family's seed is the one that built its final model. Refining that
-model runs the tail again — it continues the iteration rather than repeating it. Both trims
-in that tail (`run_pytrimal_reps`, then `clip_ends`) only ever remove columns, so models
-shrink monotonically. Refining the 14 v2 families against their own unchanged database
-shrinks 10 of them and grows none; `v2_4` had three residues of headroom over the 75 floor,
-lost 14, and died.
+model runs the tail again — it continues the iteration rather than repeating it, and the
+family settles somewhere `generate_families` never took it.
+
+That settling is a contraction, not a decay. Refining the 14 v2 families against their own
+unchanged database repeatedly, every survivor reaches an exact fixed point within about ten
+iterations and then does not move for at least another twenty-four. Models are not
+monotonically shrinking either: `hmmalign` adds insert columns *before* the trims run, and
+`hmmbuild`'s `architecture="fast"` promotes a column to a match state on occupancy, so a
+model **grows** when the new recruits genuinely support it — measured at 180 → 193 for a
+14-residue insertion carried by a diverse subfamily that outnumbers the original members.
+`--max_seq_identity` is what keeps that honest: near-identical recruits collapse to one
+representative in the seed, so a burst of duplicates cannot inflate a model, only real
+diversity can.
+
+The cost is paid once, while a family settles, and it falls on the marginal ones. Of the 14,
+two died in the first two iterations and none afterwards, by two different routes:
+
+- `v2_4` eroded — 78 → 64, representative 66, under the default `--discard_min_rep_length 75`.
+  It had three residues of headroom to begin with.
+- `v2_9` did not erode at all. Its model stayed at 99 and converged, but the top-ranked hit
+  changed between iterations and the family was scored on a 17-residue fragment.
+  `msa_stats` reads the representative off row 0 of the full MSA, which is HMMER's
+  best-scoring hit, and `finish` waives the envelope-length filter — so a short high-scoring
+  partial can become "the representative" and take the family down with it. That is inherited
+  from `generate_families`, not introduced here, and it applies to any run.
 
 So `--skip_refine` is the right default for a release refresh: it recruits from the new
-database and leaves the models exactly as they were. Reach for refine when you actually
-want the models re-derived, and expect marginal families to be discarded by the erosion
-rather than by anything in the new data.
+database and leaves the models exactly as they were. Reach for refine when you want the
+models re-derived, and expect a one-off cull of marginal families as they settle.
 
 When you change scientific behaviour, the honest check is a diff against the legacy
 script, not a green test suite. Reproduce the baseline with a pinned environment:
