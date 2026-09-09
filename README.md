@@ -178,7 +178,7 @@ artifact paths and into CSV fields, and it arrives from a file this tool did not
 Per-family artifacts land in the same `hmm/`, `full_msa/`, `seed_msa/` and `rf/`
 directories, named by family. Aggregates are `<chunk>_updated_*`: `families.tsv`,
 `metadata.csv`, `discarded.csv`, `successful.txt`, `converged.txt`, `reps.fasta.gz`,
-`delta.csv`, `manifest.txt`, and `<chunk>_updated.log`.
+`delta.csv`, and `<chunk>_updated.log`.
 
 `<chunk>_updated_delta.csv` is what an update run is *for* — one row per family, whether it
 survived or not:
@@ -198,9 +198,12 @@ model found nothing at all in the new release; `low complexity model - confoundi
 means it found hits and none cleared the envelope-length filter. For an update run that
 distinction is the point.
 
-`<chunk>_updated_manifest.txt` records which families this chunk owns in that output root,
-so a later run can clear artifacts a shrinking rerun would otherwise strand. Do not delete
-it between runs.
+Give each run its own `--output_dir`. Re-running the same models into the same directory is
+allowed, so a failed chunk can be retried in place. Running a *smaller* set of models over a
+directory that still holds a larger one is refused rather than silently cleaned up:
+`generate_families` can clear its own past output because it derives names as
+`<chunk>_<rank>`, but an updated family keeps its model's name and `--chunk_num` never
+appears in a per-family filename, so nothing on disk says which run wrote `hmm/1_7.hmm.gz`.
 
 ### Cost
 

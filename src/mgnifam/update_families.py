@@ -33,8 +33,6 @@ Three things shape this module, and each was a decision rather than an accident:
 import argparse
 import contextlib
 import itertools
-import os
-import tempfile
 import time
 from collections.abc import Sequence as SequenceCollection
 from dataclasses import dataclass
@@ -223,66 +221,38 @@ def validate_inputs(options: argparse.Namespace) -> list[tuple[str, pyhmmer.plan
     return models
 
 
-def write_atomically(path: Path, text: str) -> None:
-    """Replace `path` with `text` such that a reader never sees a partial file.
+def prepare_output_directories(root: Path, names: SequenceCollection[str]) -> None:
+    """Create the output tree, refusing a directory that holds another run's families.
 
-    The same reasoning as `build_ssi_index`, for the same kind of file: truncating this one
-    in place and dying loses the previous contents, which here is strictly worse than never
-    having written it -- the record it holds is what a later run needs to find artifacts
-    this one is about to strand.
+    `generate_families` clears its own past output instead, which it can do because it
+    *derives* family names: `<chunk>_<rank>` with a contiguous rank, so one regex describes
+    every name that chunk could ever own. An updated family keeps the name its model
+    carries, and `--chunk_num` deliberately never enters a per-family filename, so nothing
+    in `hmm/1_7.hmm.gz` says which run wrote it. The owned set cannot be derived from the
+    directory, only recorded -- and recording it means a file that must survive between
+    runs and be replaced atomically, for one narrow case.
+
+    So this refuses instead. Re-running the same models into the same directory still
+    works, which is the case that matters: a chunk that failed is re-run unchanged. What is
+    refused is re-running a *smaller* set of models over a directory that still holds the
+    larger set, which would leave the dropped families' artifacts beside aggregates that no
+    longer mention them. Use a fresh `--output_dir`, as a workflow manager does anyway.
     """
-    handle, temporary_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as file:
-            file.write(text)
-            file.flush()
-            os.fsync(file.fileno())
-        os.replace(temporary, path)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
-    directory = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
-
-
-def prepare_output_directories(root: Path, chunk: str, names: SequenceCollection[str]) -> Path:
-    """Create the output tree, record what this chunk owns, and clear the previous run.
-
-    `generate_families` clears by a `<chunk>_<number>` pattern, which does not describe a
-    preserved name. Clearing only the current input's names is not enough either: a chunk
-    that updates A and B and then reruns with only A would leave B's artifacts beside
-    aggregates that no longer mention them -- the mixed-two-runs state the clearing exists
-    to prevent.
-
-    The previous run's `successful.txt` cannot serve as the ownership record, because
-    `emit_family` writes every per-family artifact before its first shared append. A
-    `ChunkCorrupted` on that append, or a kill before the buffered handle flushes, leaves
-    artifacts on disk with no name in that file -- and those are exactly the runs that exit
-    1 and must be re-run.
-
-    So the record is the *intended* set, written before anything else. It is known up front
-    and every artifact the run can write bears a name from it, finished or not. It is
-    written as the union of the previous record and this run's names *before* clearing
-    begins, so an interruption part-way through the clear still leaves a record covering
-    both what was removed and what was not. It therefore only grows for a given output
-    root: one line per family name.
-    """
+    owned = set(names)
+    strays = sorted(
+        str(path.relative_to(root))
+        for directory, suffix in ARTIFACT_SUFFIXES.items()
+        for path in (root / directory).glob(f"*{suffix}")
+        if path.name.removesuffix(suffix) not in owned
+    )
+    if strays:
+        listed = ", ".join(strays[:5]) + (", ..." if len(strays) > 5 else "")
+        raise ValueError(
+            f"{root} already holds artifacts for families this run does not update "
+            f"({listed}). Use a fresh output_dir, or remove them first."
+        )
     for directory in FAMILY_DIRECTORIES:
         (root / directory).mkdir(parents=True, exist_ok=True)
-
-    manifest = root / f"{chunk}_updated_manifest.txt"
-    previous = set(manifest.read_text(encoding="utf-8").split()) if manifest.is_file() else set()
-    owned = sorted(previous | set(names))
-    write_atomically(manifest, "".join(f"{name}\n" for name in owned))
-
-    for directory, suffix in ARTIFACT_SUFFIXES.items():
-        for name in owned:
-            (root / directory / f"{name}{suffix}").unlink(missing_ok=True)
-    return manifest
 
 
 def parse_args(args: SequenceCollection[str] | None = None) -> argparse.Namespace:
@@ -377,7 +347,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
         options.batch_size = 2 * options.cpus
 
     root = options.output_dir
-    prepare_output_directories(root, options.chunk_num, [name for name, _ in models])
+    prepare_output_directories(root, [name for name, _ in models])
     index_path = resolve_index(options, root)
     logger = configure_logger(root / f"{options.chunk_num}_updated.log")
 

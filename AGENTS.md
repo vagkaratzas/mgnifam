@@ -134,11 +134,15 @@ would break.
   library order are different orders over the same models, and the aggregates would differ
   byte-for-byte. Guard:
   `test_library_and_directory_inputs_agree_despite_adversarial_ordering`.
-- **The ownership record is `<chunk>_updated_manifest.txt`, not `successful.txt`.**
-  `emit_family` writes every per-family artifact before its first shared append, so a
-  `ChunkCorrupted` there strands artifacts with no name in `successful.txt` — and that is
-  exactly the run that exits 1 and must be re-run. Guard:
-  `test_cleanup_survives_a_run_that_never_recorded_its_successes`.
+- **An output directory is not cleared, it is refused.** `generate_families` clears its
+  own past output from a `<chunk>_<rank>` regex, which works because it derives names. An
+  updated family keeps its model's name and `--chunk_num` never enters a per-family
+  filename, so the owned set cannot be derived from the directory — only recorded, and a
+  record that must survive between runs and be replaced atomically is a lot of machinery
+  for one case. Re-running the same models in place is allowed, so a failed chunk retries;
+  a smaller set over a larger one is refused. Guards:
+  `test_a_directory_holding_another_runs_families_is_refused`,
+  `test_a_partial_run_can_be_rerun_in_place`.
 - **Delta metrics are captured where they are computed.** `discard()` clears the records,
   model and alignments, and `finish()` holds the membership fraction in a local before it may
   discard on representative length. Reading them back off the `Family` afterwards silently

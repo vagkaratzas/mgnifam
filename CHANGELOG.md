@@ -39,10 +39,11 @@ version ranges instead — may produce different results on a different resoluti
   first means the model found nothing in the new release, the second that it found hits and
   none were long enough.
 
-  `<chunk>_updated_manifest.txt` lists the families a chunk wrote into an output root. A
-  rerun reads it to delete the previous run's files before writing its own, so that reusing
-  an output directory for a smaller set of families does not leave the dropped ones behind.
-  Keep it: without it, a rerun cannot tell which files were its own.
+  Give each run its own `--output_dir`. Re-running the same models into the same directory
+  is fine, which is what a retried chunk does. Running a *smaller* set of models over a
+  directory that still holds a larger one is refused, because the dropped families'
+  artifacts would be left beside aggregates that no longer list them, and an updated
+  family's name carries nothing that says which run wrote it.
 
 ### Changed
 

@@ -426,16 +426,33 @@ def test_a_delta_failure_after_a_discard_append_is_fatal_and_not_re_emitted(
     assert len(discarded) == 1, "the discard row was written twice by the re-emit"
 
 
-def test_a_shrinking_rerun_clears_the_families_it_no_longer_owns(
+def test_rerunning_the_same_models_into_the_same_directory_is_allowed(
     tmp_path: Path, generated: Path, extra_fasta: Path
 ) -> None:
-    """Aggregates and artifacts must describe one run, not the union of two."""
-    names = family_names(generated)
-    assert len(names) >= 2
+    """The Nextflow retry path: a chunk that failed is re-run unchanged."""
     output = tmp_path / "out"
+    update(generated / "hmm", extra_fasta, output, "--skip_refine")
+    first = sorted(p.name for p in (output / "hmm").iterdir())
 
     update(generated / "hmm", extra_fasta, output, "--skip_refine")
-    assert set(family_names(output)) == set(names)
+    assert sorted(p.name for p in (output / "hmm").iterdir()) == first
+
+
+def test_a_directory_holding_another_runs_families_is_refused(
+    tmp_path: Path, generated: Path, extra_fasta: Path
+) -> None:
+    """Refused rather than cleared, because an updated family's name cannot be derived.
+
+    `generate_families` clears its own past output from a `<chunk>_<rank>` pattern. An
+    updated family keeps its model's name and `--chunk_num` never enters a per-family
+    filename, so nothing on disk says which run wrote `hmm/1_7.hmm.gz`. Writing a smaller
+    set over a larger one would leave the dropped families beside aggregates that no longer
+    list them.
+    """
+    output = tmp_path / "out"
+    names = family_names(generated)
+    assert len(names) >= 2
+    update(generated / "hmm", extra_fasta, output, "--skip_refine")
 
     subset = tmp_path / "subset"
     subset.mkdir()
@@ -443,30 +460,27 @@ def test_a_shrinking_rerun_clears_the_families_it_no_longer_owns(
     with gzip.open(subset / f"{kept}.hmm.gz", "wb") as handle:
         read_hmm(generated / "hmm" / f"{kept}.hmm.gz").write(handle)
 
-    update(subset, extra_fasta, output, "--skip_refine")
-    assert family_names(output) == [kept]
-    assert (output / "9_updated_successful.txt").read_text().split() == [kept]
+    with pytest.raises(ValueError, match="does not update"):
+        update(subset, extra_fasta, output, "--skip_refine")
+    # Refusing must not have half-cleared the directory it refused to write into.
+    assert family_names(output) == names
 
 
-def test_cleanup_survives_a_run_that_never_recorded_its_successes(
+def test_a_partial_run_can_be_rerun_in_place(
     tmp_path: Path, generated: Path, extra_fasta: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The reason the ownership record is the intended set, not `successful.txt`.
+    """A run that exits 1 leaves artifacts behind; re-running it unchanged must work.
 
     Artifacts are written before the first shared append, so a commit failure strands them
-    with no name in that file -- and that is precisely the run that exits 1 and must be
-    re-run. Cleanup has to find them anyway.
+    with no name in `successful.txt`. They all belong to this chunk's own model set, so the
+    rerun overwrites them rather than being refused.
     """
     output = tmp_path / "out"
-    names = family_names(generated)
 
     class DeadSink:
         def write(self, _text: str) -> int:
             raise OSError("sink is dead")
 
-    # The *first* shared append, so the family's artifacts are already on disk and its name
-    # never reaches `successful.txt`. Failing a later one would still record the name, which
-    # is why this test targets this handle specifically.
     original_open_writers = update_families.open_writers
 
     def with_a_dead_sink(*args: object, **kwargs: object) -> object:
@@ -478,50 +492,14 @@ def test_cleanup_survives_a_run_that_never_recorded_its_successes(
     with pytest.raises(SystemExit) as exit_info:
         update(generated / "hmm", extra_fasta, output, "--skip_refine")
     assert exit_info.value.code == 1
-
-    stranded = set(family_names(output))
-    assert stranded, "expected artifacts on disk from the failed run"
+    assert family_names(output), "expected artifacts stranded by the failed run"
     assert (output / "9_updated_successful.txt").read_text() == ""
 
     monkeypatch.undo()
-    subset = tmp_path / "subset"
-    subset.mkdir()
-    kept = names[0]
-    with gzip.open(subset / f"{kept}.hmm.gz", "wb") as handle:
-        read_hmm(generated / "hmm" / f"{kept}.hmm.gz").write(handle)
-
-    update(subset, extra_fasta, output, "--skip_refine")
-    assert family_names(output) == [kept]
-
-
-def test_a_lost_manifest_replacement_leaves_the_previous_record_usable(
-    tmp_path: Path, generated: Path, extra_fasta: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Truncating the record in place and dying is worse than not writing it at all."""
-    output = tmp_path / "out"
-    names = family_names(generated)
     update(generated / "hmm", extra_fasta, output, "--skip_refine")
-
-    manifest = output / "9_updated_manifest.txt"
-    before = manifest.read_text()
-    assert sorted(before.split()) == sorted(names)
-
-    def die(_path: Path, _text: str) -> None:
-        raise OSError("interrupted during replacement")
-
-    monkeypatch.setattr(update_families, "write_atomically", die)
-    subset = tmp_path / "subset"
-    subset.mkdir()
-    with gzip.open(subset / f"{names[0]}.hmm.gz", "wb") as handle:
-        read_hmm(generated / "hmm" / f"{names[0]}.hmm.gz").write(handle)
-
-    with pytest.raises(OSError, match="interrupted"):
-        update(subset, extra_fasta, output, "--skip_refine")
-
-    assert manifest.read_text() == before
-    monkeypatch.undo()
-    update(subset, extra_fasta, output, "--skip_refine")
-    assert family_names(output) == [names[0]]
+    assert set((output / "9_updated_successful.txt").read_text().split()) == set(
+        family_names(generated)
+    )
 
 
 def test_round_one_recruits_are_adopted_as_members_exactly_once(
