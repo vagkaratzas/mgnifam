@@ -92,6 +92,46 @@ tests depend on only exist at that scale.
 seek inside a gzip stream, so an SSI index cannot be built over a compressed FASTA and the
 CLI rejects one.
 
+### Trying `update_families` by hand
+
+Two fixtures exist for this and are not used by the automated suite:
+
+- `mgnifams_v2.hmm.lib.gz` — the 14 families `generate_families` builds from
+  `mgnifams_v2.tsv`, concatenated into one multi-model library. **Derived**, so regenerate
+  it if `generate_families`' output ever changes:
+
+  ```bash
+  uv run mgnifam generate_families -c tests/fixtures/mgnifams_v2.tsv -f v2.fa -n v2 --output_dir gen
+  for f in gen/hmm/*.hmm.gz; do zcat "$f"; done | gzip -9n > tests/fixtures/mgnifams_v2.hmm.lib.gz
+  ```
+
+- `mgnifams_v3_additions.fa` — five sequences to append to `mgnifams_v2.fa`, standing in for
+  a new release. Four are real family members carrying 12–20% conservative substitutions,
+  two aimed at `v2_10` and two at `v2_6`; the fifth is `v2_10`'s representative shuffled,
+  which nothing should recruit. Each header says which. Kept as a separate file rather than
+  a second full FASTA: it is 1 KB against 3.4 MB, and you can read it.
+
+```bash
+zcat tests/fixtures/mgnifams_v2.fa.gz > v3.fa
+cat tests/fixtures/mgnifams_v3_additions.fa >> v3.fa
+uv run mgnifam update_families -i tests/fixtures/mgnifams_v2.hmm.lib.gz -f v3.fa \
+    -n demo --skip_refine --output_dir out
+```
+
+What to expect, and why these numbers are the point of the fixture:
+
+| | `--skip_refine` | refine |
+|---|---|---|
+| `v2_10` | 4 → 6 members | 4 → 6, model 180 → 179, converges in 2 rounds |
+| `v2_6` | 14 → 16 members | 14 → 16, model 125 → 124, converges in 2 rounds |
+| the other 12 | unchanged | `v2_4` is **discarded** |
+| decoy `9000000005` | recruited by nothing | recruited by nothing |
+
+`v2_4` discarding under refine is correct, not a bug: its model refines from 78 to 64 and
+its representative to 66, below the default `--discard_min_rep_length 75`. It is useful —
+it is the only easy way to see a discard row and the nullable delta columns (`retention`
+and `full_msa_size` are empty, because it never reached the stage that computes them).
+
 When you change scientific behaviour, the honest check is a diff against the legacy
 script, not a green test suite. Reproduce the baseline with a pinned environment:
 
