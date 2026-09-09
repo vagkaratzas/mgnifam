@@ -127,10 +127,25 @@ What to expect, and why these numbers are the point of the fixture:
 | the other 12 | unchanged | `v2_4` is **discarded** |
 | decoy `9000000005` | recruited by nothing | recruited by nothing |
 
-`v2_4` discarding under refine is correct, not a bug: its model refines from 78 to 64 and
-its representative to 66, below the default `--discard_min_rep_length 75`. It is useful —
-it is the only easy way to see a discard row and the nullable delta columns (`retention`
-and `full_msa_size` are empty, because it never reached the stage that computes them).
+`v2_4` discarding under refine has nothing to do with the added sequences — none of them
+are recruited by it, and it discards identically when refined against the **unchanged**
+`mgnifams_v2.fa`. It is useful anyway, as the only easy way to see a discard row and the
+nullable delta columns (`retention` and `full_msa_size` are empty, because it never reached
+the stage that computes them).
+
+**What it actually demonstrates: refine mode is not idempotent.** `generate_families` stops
+at convergence or `MAX_ROUNDS` and deliberately skips `advance`'s re-align/trim tail on the
+way out, so a finished family's seed is the one that built its final model. Refining that
+model runs the tail again — it continues the iteration rather than repeating it. Both trims
+in that tail (`run_pytrimal_reps`, then `clip_ends`) only ever remove columns, so models
+shrink monotonically. Refining the 14 v2 families against their own unchanged database
+shrinks 10 of them and grows none; `v2_4` had three residues of headroom over the 75 floor,
+lost 14, and died.
+
+So `--skip_refine` is the right default for a release refresh: it recruits from the new
+database and leaves the models exactly as they were. Reach for refine when you actually
+want the models re-derived, and expect marginal families to be discarded by the erosion
+rather than by anything in the new data.
 
 When you change scientific behaviour, the honest check is a diff against the legacy
 script, not a green test suite. Reproduce the baseline with a pinned environment:
