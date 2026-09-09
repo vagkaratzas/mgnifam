@@ -20,7 +20,7 @@ version ranges instead — may produce different results on a different resoluti
 ### Added
 
 - **`mgnifam update_families`**, a subcommand that refreshes families which already exist as
-  HMMs against a newer, larger database. It searches each stored model rather than
+  HMMs against a new database. It searches each stored model rather than
   re-deriving the family from its original clusters, so a family keeps its identity across
   releases and picks up every fix in the shared code path.
 
@@ -39,9 +39,10 @@ version ranges instead — may produce different results on a different resoluti
   first means the model found nothing in the new release, the second that it found hits and
   none were long enough.
 
-  `<chunk>_updated_manifest.txt` records the families a chunk owns in an output root, so a
-  later run can clear artifacts that a shrinking rerun would otherwise strand. It is written
-  atomically and must not be deleted between runs.
+  `<chunk>_updated_manifest.txt` lists the families a chunk wrote into an output root. A
+  rerun reads it to delete the previous run's files before writing its own, so that reusing
+  an output directory for a smaller set of families does not leave the dropped ones behind.
+  Keep it: without it, a rerun cannot tell which files were its own.
 
 ### Changed
 
@@ -56,13 +57,14 @@ version ranges instead — may produce different results on a different resoluti
 
 ### Fixed
 
-- **Breaking, narrowly:** a failed append to `<chunk>_discarded.csv` now exits 1 instead of
-  being contained and retried. The shared-output hardening below protected the success path
-  only; the discard branch's single append was left outside any boundary, so a failure there
-  was caught by `family_guard`, re-emitted, and the row appended a second time — a partial
-  first write followed by a successful retry duplicated it. Both branches now commit under
-  the same boundary. No clean run is affected, and `generate_families`' output is unchanged
-  byte-for-byte.
+- **Breaking, narrowly:** if writing a row to `<chunk>_discarded.csv` fails, the run now
+  exits 1 instead of trying again.
+
+  Retrying was unsafe. A write can fail *after* putting part of the row on disk, and the
+  retry appended the whole row again — leaving one and a half rows for one family. The
+  entry below fixed exactly this for successful families in 2.1.0.dev0 but missed the
+  discard branch; both are now handled the same way. A run that writes its output
+  successfully is unaffected, and `generate_families`' output is unchanged byte-for-byte.
 - A failure after a successful family first appended to shared chunk output could be
   contained as a discard, putting the same family in generated and discarded outputs.
   Shared-output commit failures now bypass per-family containment and exit 1, so exit 3

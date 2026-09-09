@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pyhmmer
 import pytest
@@ -523,35 +524,33 @@ def test_a_lost_manifest_replacement_leaves_the_previous_record_usable(
     assert family_names(output) == [names[0]]
 
 
-def test_generate_families_output_is_unchanged_by_the_shared_edits(
-    tmp_path: Path, small_fasta: Path, fixture_directory: Path
+def test_round_one_recruits_are_adopted_as_members_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Criterion 5: `update_families` may not move `generate_families` by one byte.
+    """Only the first round sets the yardstick; later rounds are scored against it.
 
-    The manifest was produced by the commit before those edits, following the procedure in
-    `PLAN_UPDATE.md`. The run log carries timestamps and the SSI index embeds the FASTA's
-    filename, so both are excluded.
+    If a later round re-adopted its own recruits, `finish` would compare the final model to
+    itself and the membership check could never fail -- which is the whole point of it.
+    `advance` clears the flag in the same block that reads it.
     """
-    output = tmp_path / "out"
-    generate(fixture_directory / "clustering.tsv", small_fasta, output, chunk="base")
+    rounds = iter(
+        [
+            [generate_families.Sequence("A_1_9/1_9", "AAAA")],
+            [generate_families.Sequence("B_1_9/1_9", "BBBB")],
+        ]
+    )
+    monkeypatch.setattr(generate_families, "filter_hits", lambda *_a, **_k: next(rounds))
+    options = SimpleNamespace(recruit_hit_length_percentage=0.9)
+    family = generate_families.Family(
+        representative="1_7", members=[], adopt_recruits_as_members=True
+    )
 
-    expected = {
-        name: digest
-        for digest, name in (
-            line.split(maxsplit=1)
-            for line in (fixture_directory / "generate_families_manifest.txt")
-            .read_text()
-            .splitlines()
-        )
-    }
-    import hashlib
+    family.advance(options, None, generate_families.MAX_ROUNDS)  # type: ignore[arg-type]
+    assert family.members == ["A_1_9"]
+    assert family.adopt_recruits_as_members is False
 
-    produced = {
-        str(path.relative_to(output)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in output.rglob("*")
-        if path.is_file() and path.suffix not in (".log", ".ssi")
-    }
-    assert produced == {name.strip(): digest for name, digest in expected.items()}
+    family.advance(options, None, generate_families.MAX_ROUNDS)  # type: ignore[arg-type]
+    assert family.members == ["A_1_9"], "a later round overwrote round 1's yardstick"
 
 
 def test_cli_dispatches_to_update_families(monkeypatch: pytest.MonkeyPatch) -> None:

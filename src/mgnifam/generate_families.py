@@ -711,6 +711,10 @@ class Family:
             return
 
         if self.adopt_recruits_as_members:
+            # Cleared here, in the block that reads it, so only the first round a family
+            # reaches adopts. A later round must be scored against round 1's recruitment,
+            # not against its own -- otherwise the membership check compares a model to
+            # itself and can never fail.
             self.members = unmask_sequence_names(filtered_sequences)
             self.adopt_recruits_as_members = False
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Refresh existing protein families against a newer, larger sequence database.
+"""Refresh existing protein families against a new sequence database.
 
 `generate_families` derives a family from an MMseqs2 cluster. This command starts from
 families that already exist as HMMs and searches them against a new release, so a family
@@ -414,8 +414,13 @@ def main(args: SequenceCollection[str] | None = None) -> None:
             for batch_number, batch in enumerate(
                 itertools.batched(models, options.batch_size, strict=False), 1
             ):
-                # `members` starts empty and `adopt_recruits_as_members` fills it from round
-                # 1, except under --skip_refine where `recruit_only` sets it directly.
+                # `members` starts empty: an updated family has no cluster behind it, so
+                # round 1's own recruits become the yardstick `finish` scores it against.
+                # Only round 1 -- `Family.advance` clears the flag in the same block that
+                # reads it (`generate_families.py`, `if self.adopt_recruits_as_members:`),
+                # so rounds 2 and 3 leave `members` alone. Under --skip_refine `advance` is
+                # never called at all and `recruit_only` sets `members` directly, which is
+                # why the flag is off there.
                 active = [
                     Family(
                         representative=name,

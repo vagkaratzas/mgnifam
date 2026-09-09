@@ -138,8 +138,8 @@ path you typed, so its output is not reproducible across directories. Ours is.
 
 ## Updating existing families
 
-`mgnifam update_families` refreshes families that already exist as HMMs against a newer,
-larger database. It is the answer to "a new release came out" — you do not re-derive the
+`mgnifam update_families` refreshes families that already exist as HMMs against a new
+database. It is the answer to "a new release came out" — you do not re-derive the
 families from their original clusters, you search the models you already have.
 
 ```bash
