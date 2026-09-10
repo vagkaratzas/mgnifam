@@ -78,6 +78,13 @@ version ranges instead — may produce different results on a different resoluti
   checked-sequence set immediately. This prevents a batch from pinning its dominant memory
   objects and makes containment of an oversized family's `MemoryError` capable of
   reclaiming that memory before processing continues.
+- **Breaking:** representative selection now uses the highest-scoring reported domain of
+  the top-ranked hit. HMMER reports a hit's domains in positional order, so a short
+  leftmost fragment could previously become row 0 of the full MSA, producing incorrect
+  representative metadata or discarding a healthy family. `extract_records` now orders
+  each hit's reported domains by score before alignment. This intentionally changes
+  scientific output for affected multi-domain hits and diverges from the legacy script;
+  the regression is covered by `test_extract_records_puts_top_scoring_domain_first`.
 
 ## [2.0.0] - 2026/07/29
 

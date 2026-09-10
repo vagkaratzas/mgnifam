@@ -249,8 +249,9 @@ Both CSVs carry a header row, so they load with `pandas.read_csv` as they are:
 | `<chunk>_discarded.csv` | `representative,reason,value` |
 
 `protein` is quoted; `region` is `<start>-<end>` on the parent protein, or `-` when the
-representative spans a whole unsliced record. The header is written before the run
-starts, so a chunk that produces no families still yields a parseable file.
+representative spans a whole unsliced record. The representative is the highest-scoring
+reported domain of HMMER's top-ranked hit. The header is written before the run starts, so
+a chunk that produces no families still yields a parseable file.
 
 ### Exit status
 

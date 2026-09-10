@@ -17,7 +17,7 @@ does and how to run it; this file covers what will bite you. Read both.
 
 ## Before you change anything in `generate_families.py`
 
-Four invariants are load-bearing. Each was a real bug at some point, each is guarded by
+Five invariants are load-bearing. Each was a real bug at some point, each is guarded by
 exactly one test, and each survives a passing end-to-end run if you break it.
 
 1. **`hmmsearch` must be called with `parallel="queries"`, explicitly.** Left to choose,
@@ -37,7 +37,12 @@ exactly one test, and each survives a passing end-to-end run if you break it.
    every result graph for the batch. Guard:
    `test_extracted_records_do_not_retain_pyhmmer_results`.
 
-4. **The SSI index guard is an `if ... raise`, not an `assert`.** `python -O` strips
+4. **Reported domains are sorted by score within each hit.** HMMER reports domains in
+   positional order, but row 0 supplies representative metadata and length. The
+   top-ranked hit's highest-scoring domain must lead. Guard:
+   `test_extract_records_puts_top_scoring_domain_first`.
+
+5. **The SSI index guard is an `if ... raise`, not an `assert`.** `python -O` strips
    asserts, and the failure it prevents is a silent wrong-sequence read from a stale
    index. Guard: `test_index_mismatch_guard_and_optimized_python`.
 
@@ -151,16 +156,16 @@ representative in the seed, so a burst of duplicates cannot inflate a model, onl
 diversity can.
 
 The cost is paid once, while a family settles, and it falls on the marginal ones. Of the 14,
-two died in the first two iterations and none afterwards, by two different routes:
+one died in the first two iterations:
 
 - `v2_4` eroded — 78 → 64, representative 66, under the default `--discard_min_rep_length 75`.
   It had three residues of headroom to begin with.
-- `v2_9` did not erode at all. Its model stayed at 99 and converged, but the top-ranked hit
-  changed between iterations and the family was scored on a 17-residue fragment.
-  `msa_stats` reads the representative off row 0 of the full MSA, which is HMMER's
-  best-scoring hit, and `finish` waives the envelope-length filter — so a short high-scoring
-  partial can become "the representative" and take the family down with it. That is inherited
-  from `generate_families`, not introduced here, and it applies to any run.
+
+The previous refine run also exposed issue #8 in `generate_families`: `v2_9`'s top-ranked
+hit carried a 17-residue leftmost domain and a 99-residue higher-scoring domain. HMMER
+reports those domains positionally, so the short fragment became row 0 and the healthy
+family was discarded. `extract_records` now sorts each hit's reported domains by score,
+keeping the 99-residue domain as the representative.
 
 So `--skip_refine` is the right default for a release refresh: it recruits from the new
 database and leaves the models exactly as they were. Reach for refine when you want the

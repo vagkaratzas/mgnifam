@@ -355,7 +355,8 @@ def extract_records(top_hits: Any) -> list[Record]:
     """Flatten a TopHits into (name, target_length, env_from, env_to) tuples.
 
     Only hits and domains that cleared the pipeline's reporting thresholds are
-    returned, in HMMER's own ranking order.
+    returned. Hits retain HMMER's ranking order, while each hit's domains are
+    ordered from highest to lowest score.
 
     Two constraints drive this:
 
@@ -372,7 +373,7 @@ def extract_records(top_hits: Any) -> list[Record]:
     return [
         (hit.name, hit.length, domain.env_from, domain.env_to)
         for hit in top_hits.reported
-        for domain in hit.domains.reported
+        for domain in sorted(hit.domains.reported, key=lambda domain: domain.score, reverse=True)
     ]
 
 
@@ -422,8 +423,9 @@ def run_hmmalign(
 def msa_stats(msa: pyhmmer.easel.TextMSA) -> tuple[int, int]:
     """Return (sequence count, ungapped length of the first row).
 
-    Row 0 is the family representative: hits arrive in HMMER's ranking order, so the
-    best-scoring sequence leads the alignment.
+    Row 0 is the family representative: hits retain HMMER's ranking order and their
+    domains are ordered by score, so the best-scoring domain of the top hit leads the
+    alignment.
     """
     number_of_sequences = len(msa.names)
     non_gap_representative_length = (
@@ -1014,7 +1016,7 @@ def emit_family(
         ):
             writers.refined_families.write(f"{family_id}\t{sequence_name}\n")
             if row_number == 0:
-                # Row 0 is the representative: hits arrive in HMMER's ranking order.
+                # Row 0 is the representative: the top hit's highest-scoring domain leads.
                 residues = re.sub(r"[.\-~]", "", row).upper()
                 protein, _, region = sequence_name.partition("/")
                 writers.family_metadata.write(

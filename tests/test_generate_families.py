@@ -5,10 +5,11 @@ data, because several of the properties under test -- the reporting threshold, h
 ordering, envelope clipping -- only appear on a database large enough to produce
 marginal hits.
 
-Three tests exist precisely because an end-to-end run cannot observe what they check:
+Four tests exist precisely because an end-to-end run cannot observe what they check:
 `test_unreported_hit_is_not_recruited_and_prefetch_matches`,
 `test_index_mismatch_guard_and_optimized_python`, and
-`test_extracted_records_do_not_retain_pyhmmer_results`. Each guards an invariant whose
+`test_extracted_records_do_not_retain_pyhmmer_results`, and
+`test_extract_records_puts_top_scoring_domain_first`. Each guards an invariant whose
 violation leaves the final artifacts looking correct. Read their docstrings before
 deleting them as redundant.
 """
@@ -24,6 +25,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pyhmmer
@@ -1129,6 +1131,33 @@ def test_unreported_hit_is_not_recruited_and_prefetch_matches(
             gf.IndexedSequences(indexed_file),
         )
     assert "6320430079" not in gf.unmask_sequence_names(recruited)
+
+
+def test_extract_records_puts_top_scoring_domain_first() -> None:
+    """A multi-domain top hit must contribute its best domain as MSA row 0."""
+    top_hit = SimpleNamespace(
+        name="top",
+        length=120,
+        domains=SimpleNamespace(
+            reported=[
+                SimpleNamespace(score=10.0, env_from=1, env_to=17),
+                SimpleNamespace(score=90.0, env_from=22, env_to=120),
+            ]
+        ),
+    )
+    lower_hit = SimpleNamespace(
+        name="lower",
+        length=100,
+        domains=SimpleNamespace(reported=[SimpleNamespace(score=50.0, env_from=1, env_to=100)]),
+    )
+
+    records = gf.extract_records(SimpleNamespace(reported=[top_hit, lower_hit]))
+
+    assert records == [
+        ("top", 120, 22, 120),
+        ("top", 120, 1, 17),
+        ("lower", 100, 1, 100),
+    ]
 
 
 def test_prefetch_end_to_end_equivalence(
