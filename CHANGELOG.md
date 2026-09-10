@@ -58,6 +58,8 @@ version ranges instead — may produce different results on a different resoluti
 
 ### Fixed
 
+- Regenerated the derived v2 HMM library after domain-score ordering changed the
+  seed checksums of `v2_3` and `v2_14`. Model parameters and calibration are unchanged.
 - Corrected stale AGENTS guidance to describe the already-implemented final-round
   seed preservation and Stockholm family IDs. Scientific behavior is unchanged.
 - Accepted `update_families` retries clear previous artifacts for the input family

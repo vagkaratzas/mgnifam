@@ -4,6 +4,11 @@ Reviewed 2026-09-10. The original review requested changes for two output-safety
 defects. Follow-up fixes are tracked below; findings describe the reviewed commit.
 Scope of follow-up: F1, F2, F5 and F6. F3 and F4 remain open for separate work.
 
+**Follow-up complete:** F1, F2, F5 and F6 are done, each in a separate local commit.
+Final verification: locked environment checks passed, **83 tests passed**, all
+pre-commit hooks passed, and all 14 library models matched fresh generation.
+No push was performed. F3/F4 and the shared scientific implementation are unchanged.
+
 ## Scope and evidence
 
 - [PR #7: Update families](https://github.com/vagkaratzas/mgnifam/pull/7) was open at
@@ -21,9 +26,10 @@ Scope of follow-up: F1, F2, F5 and F6. F3 and F4 remain open for separate work.
   a contained transient failure, input/output collision, renamed FASTA records,
   regenerated HMMs, and the documented v3 additions in both update modes. CSV checks
   exercised the real `emit_family()` with small alignments and in-memory writers.
-- No production code, tests, dependencies, reference files, or GitHub state were
-  changed. This report is the only repository addition. Full pre-commit hooks,
-  distribution builds, and a separate legacy-environment replay were not run.
+- At the original review stage, no production code, tests, dependencies, reference
+  files, or GitHub state were changed; only this report was added. Full pre-commit
+  hooks, distribution builds, and a separate legacy-environment replay were not run
+  during that review (follow-up verification is recorded above).
   GitHub returned no status-check results for the reviewed head; this report relies
   on the local verification, not a claim that remote CI passed.
 
@@ -189,6 +195,10 @@ Update AGENTS to match the current guarantees, keeping the historical PLAN files
 unchanged. Its “37 tests” count is also stale; current collection is 70.
 
 ## F6 — P3: The derived HMM library was not fully regenerated after domain reordering
+
+**DONE.** Regenerated the library from the current generator and locked dependencies.
+All 14 reloaded models match fresh generation byte-for-byte; the only model-text
+changes from the previous library are the two CKSUM values documented below.
 
 **PR fixture drift.** Location:
 [`tests/fixtures/mgnifams_v2.hmm.lib.gz`](tests/fixtures/mgnifams_v2.hmm.lib.gz), with
