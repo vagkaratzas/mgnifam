@@ -56,27 +56,31 @@ generated/discarded split; an internal crash is recorded as a discard so the chu
 finish, then also fails the completed run with exit 3. Exit 1 means containment could not
 leave coherent output, so that output must not be consumed.
 
-## Behaviour that looks like a bug and is not
+## Deliberate differences from the legacy script
 
-Do not "fix" these. They are reproduced from the legacy script on purpose, are documented
-in `CHANGELOG.md` under *Preserved deliberately*, and each carries a comment at the site:
+The legacy oracle records the starting behaviour, not every current guarantee.
+`CHANGELOG.md` documents the intentional fixes; the historical PLAN files describe
+earlier decisions and must not be used to reverse them.
 
-- The `family_iteration > 3` path writes an HMM that is not the model used for the final
-  search and alignment.
-- `renumber_sto_msa` strips every `#=GF`/`#=GS`/`#=GR` line, so the seed Stockholm has no
-  `#=GF ID`. The family name reaches the output as the HMM's `NAME` field. Asserting
-  `#=GF ID` in a seed `.sto` is wrong; a plan once did, and only running the code caught it.
+- On convergence and at `MAX_ROUNDS`, `Family.advance()` skips the re-align/trim tail.
+  The seed remains the one that built the final search model. Legacy ran an unused
+  final trim and exported a model built from a seed it had never searched with.
+  Guard: `test_final_round_leaves_the_searched_seed_in_place`.
+- `renumber_msa()` names both output alignments, so seed and full Stockholm files
+  contain `#=GF ID <family>`. HMMER posterior annotations are omitted, but the RF line
+  remains. Legacy's `renumber_sto_msa` stripped the family ID along with those annotations.
+  Guard: `test_declared_outputs_parse_and_long_fixture_runs`.
 
 There are two distinct clipping functions. `clip_env_ends()` reads the `#=GC RF` line and
 trims envelope overhangs from seed alignments. `clip_ends()` reads gap occupancy and runs
 after redundancy trimming. They are not interchangeable.
 
-`clip_ends()` used to be on the list above: it dropped the last column that passed the
+Legacy `clip_ends()` dropped the last column that passed the
 occupancy threshold, and reported a full span when no column passed. Both were fixed in
 1.0.0, so it now diverges from `reference/legacy_generate_families.py` on purpose. If you
 diff against the legacy baseline, expect every model to be one match state wider.
 
-`split_slice_name()` is the second deliberate divergence. Legacy recovered a slice's
+`split_slice_name()` is another deliberate divergence. Legacy recovered a slice's
 parent protein with `split("_")` on exactly three fields, which truncated any protein
 name that itself contains underscores, raised on non-numeric trailing fields, and
 invented coordinates for a name like `scaffold_12_34`. It now splits from the right and
@@ -89,7 +93,7 @@ test holds for every real slice — so this changes no output for the reference 
 `generate_families` writes every generated artifact under `--output_dir` (default:
 `output/`), including an automatically built SSI index.
 
-`uv run pytest` — 37 tests, roughly half a minute. They run against real 50,000- and
+`uv run pytest` runs the suite against real 50,000- and
 26,949-sequence fixtures rather than toy data, because the marginal hits that several
 tests depend on only exist at that scale.
 

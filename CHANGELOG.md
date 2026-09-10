@@ -58,6 +58,8 @@ version ranges instead — may produce different results on a different resoluti
 
 ### Fixed
 
+- Corrected stale AGENTS guidance to describe the already-implemented final-round
+  seed preservation and Stockholm family IDs. Scientific behavior is unchanged.
 - Accepted `update_families` retries clear previous artifacts for the input family
   names before processing. A later discard no longer leaves a stale HMM/alignment,
   and recruit-only retries remove obsolete seed/RF artifacts. Foreign family names

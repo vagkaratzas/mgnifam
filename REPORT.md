@@ -171,6 +171,10 @@ including two names with the same prefix, through recruitment and emission.
 
 ## F5 — P3: AGENTS instructions contradict the implemented scientific contract
 
+**DONE.** AGENTS now describes final-round seed preservation and Stockholm IDs as
+intentional fixes, names their existing regression tests, and removes the stale
+hard-coded test count. Historical PLAN files and scientific code are unchanged.
+
 **Pre-existing documentation drift, still present in the PR.** Location:
 [`AGENTS.md:59–68`](AGENTS.md#L59).
 
