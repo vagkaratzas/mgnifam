@@ -219,15 +219,15 @@ would break.
   library order are different orders over the same models, and the aggregates would differ
   byte-for-byte. Guard:
   `test_library_and_directory_inputs_agree_despite_adversarial_ordering`.
-- **An output directory is not cleared, it is refused.** `generate_families` clears its
-  own past output from a `<chunk>_<rank>` regex, which works because it derives names. An
-  updated family keeps its model's name and `--chunk_num` never enters a per-family
-  filename, so the owned set cannot be derived from the directory — only recorded, and a
-  record that must survive between runs and be replaced atomically is a lot of machinery
-  for one case. Re-running the same models in place is allowed, so a failed chunk retries;
-  a smaller set over a larger one is refused. Guards:
+- **Refuse foreign families, then clear accepted names before a retry.** An updated
+  family keeps its model's name, so `--chunk_num` cannot establish artifact ownership.
+  A smaller input set over a larger output set is refused before deleting anything.
+  After collision validation, clear all four exact artifact paths for each input name:
+  discarded families must leave no old models, and recruit-only retries must leave no
+  old seed/RF files. Cleanup errors abort before aggregate files are opened. Guards:
   `test_a_directory_holding_another_runs_families_is_refused`,
-  `test_a_partial_run_can_be_rerun_in_place`.
+  `test_a_partial_run_can_be_rerun_in_place`, `test_retry_artifacts_match_the_new_outcome`,
+  `test_failed_retry_cleanup_aborts_before_aggregate_truncation`.
 - **Delta metrics are captured where they are computed.** `discard()` clears the records,
   model and alignments, and `finish()` holds the membership fraction in a local before it may
   discard on representative length. Reading them back off the `Family` afterwards silently

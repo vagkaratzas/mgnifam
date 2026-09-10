@@ -265,21 +265,16 @@ def validate_output_paths(options: argparse.Namespace, names: set[str]) -> None:
 
 
 def prepare_output_directories(root: Path, names: SequenceCollection[str]) -> None:
-    """Create the output tree, refusing a directory that holds another run's families.
+    """Refuse foreign families, then clear the input families' previous artifacts.
 
-    `generate_families` clears its own past output instead, which it can do because it
-    *derives* family names: `<chunk>_<rank>` with a contiguous rank, so one regex describes
-    every name that chunk could ever own. An updated family keeps the name its model
-    carries, and `--chunk_num` deliberately never enters a per-family filename, so nothing
-    in `hmm/1_7.hmm.gz` says which run wrote it. The owned set cannot be derived from the
-    directory, only recorded -- and recording it means a file that must survive between
-    runs and be replaced atomically, for one narrow case.
+    Call only after input/output collision validation. The input names identify exactly
+    which files a retry may replace. All four artifact types must be cleared even when
+    this run skips refinement: a discarded family must leave no old model behind, and
+    recruit-only output must not retain a previous refinement's seed or RF annotation.
 
-    So this refuses instead. Re-running the same models into the same directory still
-    works, which is the case that matters: a chunk that failed is re-run unchanged. What is
-    refused is re-running a *smaller* set of models over a directory that still holds the
-    larger set, which would leave the dropped families' artifacts beside aggregates that no
-    longer mention them. Use a fresh `--output_dir`, as a workflow manager does anyway.
+    A smaller input set over a larger output set remains an error: nothing identifies
+    the omitted families as ours to remove. Check the entire tree before deleting any
+    accepted paths. A cleanup error propagates and aborts before aggregates are opened.
     """
     owned = set(names)
     strays = sorted(
@@ -296,6 +291,9 @@ def prepare_output_directories(root: Path, names: SequenceCollection[str]) -> No
         )
     for directory in FAMILY_DIRECTORIES:
         (root / directory).mkdir(parents=True, exist_ok=True)
+    for directory, suffix in ARTIFACT_SUFFIXES.items():
+        for name in names:
+            (root / directory / f"{name}{suffix}").unlink(missing_ok=True)
 
 
 def parse_args(args: SequenceCollection[str] | None = None) -> argparse.Namespace:

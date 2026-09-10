@@ -207,6 +207,9 @@ appears in a per-family filename, so nothing on disk says which run wrote `hmm/1
 
 Input files must not overlap output paths, including through symlinks or hard links.
 This is checked before writing, for both model directories and single-file libraries.
+On an accepted retry, previous artifacts for the input family names are removed before
+processing. Discarded families therefore leave no old models, and `--skip_refine` leaves
+no seed/RF files from a previous refine run. A cleanup failure aborts the run.
 
 ### Cost
 

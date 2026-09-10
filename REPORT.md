@@ -32,6 +32,12 @@ P3 means a maintenance correction. Findings distinguish PR defects from existing
 
 ## F1 — P1: Allowed reruns leave artifacts for discarded families
 
+**DONE.** Accepted retries clear all four exact artifact paths for each input family,
+after collision validation and refusal of foreign families. Cleanup failures abort
+before aggregate truncation. Regression tests cover changed discard outcomes,
+transient failures, refine-to-recruit-only retries, and cleanup failure.
+All 35 update-command tests and all pre-commit hooks passed after F1/F2.
+
 **Introduced by PR #7.** Location:
 [`update_families.py:241–255`](src/mgnifam/update_families.py#L241), interacting with
 the discard return in [`generate_families.py:926–941`](src/mgnifam/generate_families.py#L926).

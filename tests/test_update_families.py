@@ -438,6 +438,64 @@ def test_rerunning_the_same_models_into_the_same_directory_is_allowed(
     assert sorted(p.name for p in (output / "hmm").iterdir()) == first
 
 
+@pytest.mark.parametrize("outcome", ["discard", "crash", "skip_refine"])
+def test_retry_artifacts_match_the_new_outcome(
+    tmp_path: Path,
+    generated: Path,
+    extra_fasta: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+) -> None:
+    output = tmp_path / "out"
+    update(generated / "hmm", extra_fasta, output)
+    assert list((output / "seed_msa").iterdir())
+    args = [] if outcome == "crash" else ["--skip_refine"]
+    if outcome == "discard":
+        args += ["--discard_min_rep_length", "2000"]
+    if outcome == "crash":
+        original = generate_families.renumber_msa
+        failed = False
+
+        def fail_once(*args: object, **kwargs: object) -> object:
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise OSError("transient read failure")
+            return original(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(generate_families, "renumber_msa", fail_once)
+        with pytest.raises(SystemExit) as error:
+            update(generated / "hmm", extra_fasta, output, *args)
+        assert error.value.code == 3
+    else:
+        update(generated / "hmm", extra_fasta, output, *args)
+    successful = set((output / "9_updated_successful.txt").read_text().splitlines())
+    assert bool(successful) == (outcome != "discard")
+    for directory, suffix in update_families.ARTIFACT_SUFFIXES.items():
+        expected = successful if directory in ("hmm", "full_msa") or outcome == "crash" else set()
+        assert {p.name.removesuffix(suffix) for p in (output / directory).iterdir()} == expected
+    with (output / "9_updated_discarded.csv").open() as handle:
+        discarded = {row["representative"] for row in csv.DictReader(handle)}
+    assert successful.isdisjoint(discarded)
+    assert successful | discarded == set(family_names(generated))
+
+
+def test_failed_retry_cleanup_aborts_before_aggregate_truncation(
+    tmp_path: Path, generated: Path, extra_fasta: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "out"
+    update(generated / "hmm", extra_fasta, output, "--skip_refine")
+    before = {p: p.read_bytes() for p in output.iterdir() if p.is_file()}
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+    with pytest.raises(OSError, match="cleanup failed"):
+        update(generated / "hmm", extra_fasta, output, "--skip_refine")
+    assert {p: p.read_bytes() for p in output.iterdir() if p.is_file()} == before
+
+
 def test_a_directory_holding_another_runs_families_is_refused(
     tmp_path: Path, generated: Path, extra_fasta: Path
 ) -> None:

@@ -58,6 +58,10 @@ version ranges instead — may produce different results on a different resoluti
 
 ### Fixed
 
+- Accepted `update_families` retries clear previous artifacts for the input family
+  names before processing. A later discard no longer leaves a stale HMM/alignment,
+  and recruit-only retries remove obsolete seed/RF artifacts. Foreign family names
+  are still refused; cleanup failures abort before aggregate files are truncated.
 - `update_families` rejects input files that overlap an output destination, including
   single-file HMM libraries and symlink/hard-link aliases, before creating any output.
   Previously a successful update could overwrite the library needed to retry it.
