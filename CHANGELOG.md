@@ -58,6 +58,10 @@ version ranges instead — may produce different results on a different resoluti
 
 ### Fixed
 
+- `update_families` rejects input files that overlap an output destination, including
+  single-file HMM libraries and symlink/hard-link aliases, before creating any output.
+  Previously a successful update could overwrite the library needed to retry it.
+
 - **Breaking, narrowly:** if writing a row to `<chunk>_discarded.csv` fails, the run now
   exits 1 instead of trying again.
 

@@ -198,6 +198,12 @@ would break.
 
 ## Before you change anything in `update_families.py`
 
+- **Reject input/output aliases before writing or retry cleanup.** Single-file libraries,
+  model directories, FASTA and supplied SSI files must survive rejection unchanged.
+  Check resolved paths and existing file identities, including output-folder symlinks.
+  Guards: `test_input_models_cannot_be_overwritten`,
+  `test_input_library_cannot_alias_an_aggregate`.
+
 - **A family's identity is its model's `NAME`, and it must reach every output.** Filenames
   are the easy half. `<chunk>_updated_metadata.csv`, `<chunk>_updated_families.tsv`,
   `converged.txt` and the `reps.fasta.gz` annotation all carry it too, and the annotation is

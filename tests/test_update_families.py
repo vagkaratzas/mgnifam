@@ -502,6 +502,49 @@ def test_a_partial_run_can_be_rerun_in_place(
     )
 
 
+@pytest.mark.parametrize("alias", ["direct", "symlink", "hardlink", "directory_symlink"])
+@pytest.mark.parametrize("model_count", [1, 2])
+def test_input_models_cannot_be_overwritten(
+    tmp_path: Path, generated: Path, small_fasta: Path, alias: str, model_count: int
+) -> None:
+    models = [read_hmm(p) for p in sorted((generated / "hmm").iterdir())][:model_count]
+    output = tmp_path / "out"
+    (output / "hmm").mkdir(parents=True)
+    destination = output / "hmm" / f"{models[0].name}.hmm.gz"
+    source = write_library(models, destination if alias == "direct" else tmp_path / "input.hmm.gz")
+    if alias == "symlink":
+        destination.symlink_to(source)
+    elif alias == "hardlink":
+        destination.hardlink_to(source)
+    elif alias == "directory_symlink":
+        source.unlink()
+        (output / "hmm").rmdir()
+        source = tmp_path / "models"
+        source.mkdir()
+        write_library(models, source / destination.name)
+        (output / "hmm").symlink_to(source, target_is_directory=True)
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    with pytest.raises(ValueError, match=r"overlaps an input|must not be the output_dir"):
+        update(source, small_fasta, output, "--skip_refine")
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+    assert not (output / "9_updated.log").exists()
+
+
+def test_input_library_cannot_alias_an_aggregate(
+    tmp_path: Path, generated: Path, small_fasta: Path
+) -> None:
+    output = tmp_path / "out"
+    output.mkdir()
+    source = write_library(
+        [read_hmm(next((generated / "hmm").iterdir()))], output / "9_updated_reps.fasta.gz"
+    )
+    before = source.read_bytes()
+    with pytest.raises(ValueError, match="overlaps an input"):
+        update(source, small_fasta, output, "--skip_refine")
+    assert source.read_bytes() == before
+    assert list(output.iterdir()) == [source]
+
+
 def test_round_one_recruits_are_adopted_as_members_exactly_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

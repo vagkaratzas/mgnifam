@@ -205,6 +205,9 @@ directory that still holds a larger one is refused rather than silently cleaned 
 `<chunk>_<rank>`, but an updated family keeps its model's name and `--chunk_num` never
 appears in a per-family filename, so nothing on disk says which run wrote `hmm/1_7.hmm.gz`.
 
+Input files must not overlap output paths, including through symlinks or hard links.
+This is checked before writing, for both model directories and single-file libraries.
+
 ### Cost
 
 `hmmsearch` is `O(n_families x database)` and this command does not change that.

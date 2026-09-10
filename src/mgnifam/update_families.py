@@ -199,7 +199,7 @@ def validate_inputs(options: argparse.Namespace) -> list[tuple[str, pyhmmer.plan
     # it would silently destroy the input the user would need to re-run it.
     if hmm_input.is_dir():
         root = options.output_dir.resolve()
-        forbidden = {root} | {root / directory for directory in FAMILY_DIRECTORIES}
+        forbidden = {root} | {(root / directory).resolve() for directory in FAMILY_DIRECTORIES}
         if hmm_input.resolve() in forbidden:
             raise ValueError("hmm_input must not be the output_dir or one of its artifact folders")
 
@@ -218,7 +218,50 @@ def validate_inputs(options: argparse.Namespace) -> list[tuple[str, pyhmmer.plan
         seen.add(name)
         if hmm.alphabet != ALPHABET:
             raise ValueError(f"HMM {name!r} is not an amino-acid model")
+    validate_output_paths(options, seen)
     return models
+
+
+def validate_output_paths(options: argparse.Namespace, names: set[str]) -> None:
+    """Reject destinations that alias an input, before output creation or retry cleanup."""
+    source = Path(options.hmm_input)
+    inputs = (
+        [p for p in source.iterdir() if p.name.endswith((".hmm", ".hmm.gz"))]
+        if source.is_dir()
+        else [source]
+    )
+    inputs.append(Path(options.fasta_file))
+    if options.fasta_index:
+        inputs.append(Path(options.fasta_index))
+    resolved_inputs = {p.resolve() for p in inputs}
+    input_inodes = {(p.stat().st_dev, p.stat().st_ino) for p in inputs}
+    root = options.output_dir
+    destinations = [
+        root / directory / f"{name}{suffix}"
+        for directory, suffix in ARTIFACT_SUFFIXES.items()
+        for name in sorted(names)
+    ]
+    prefix = f"{options.chunk_num}_updated"
+    destinations.extend(
+        root / f"{prefix}_{suffix}"
+        for suffix in (
+            "families.tsv",
+            "metadata.csv",
+            "discarded.csv",
+            "successful.txt",
+            "converged.txt",
+            "reps.fasta.gz",
+            "delta.csv",
+        )
+    )
+    destinations.append(root / f"{prefix}.log")
+    if not options.fasta_index:
+        destinations.append(root / f"{Path(options.fasta_file).name}.ssi")
+    for path in destinations:
+        if path.resolve() in resolved_inputs or (
+            path.exists() and (path.stat().st_dev, path.stat().st_ino) in input_inodes
+        ):
+            raise ValueError(f"output path {path} overlaps an input file")
 
 
 def prepare_output_directories(root: Path, names: SequenceCollection[str]) -> None:
