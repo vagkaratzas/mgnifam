@@ -15,7 +15,7 @@ stored HMMs are the state that route spends its first round reconstructing.
 Three things shape this module, and each was a decision rather than an accident:
 
 1. **A family's identity is its model's `NAME`, preserved verbatim.** Nothing is
-   renumbered, so a family keeps the same name across releases. `--chunk_num` therefore
+   renumbered, so a family keeps the same name across releases. `--chunk_id` therefore
    labels only the per-chunk aggregate files.
 
 2. **Round 1 searches with the loaded model, not one built from a seed.** A seed cannot be
@@ -159,8 +159,8 @@ def validate_inputs(options: argparse.Namespace) -> list[tuple[str, pyhmmer.plan
     Ordering matters as much as the checks: nothing here may create a directory, so a
     rejected run leaves the output root exactly as it found it.
     """
-    if CHUNK_PATTERN.fullmatch(options.chunk_num) is None:
-        raise ValueError("chunk_num must match [A-Za-z0-9._-]+")
+    if CHUNK_PATTERN.fullmatch(options.chunk_id) is None:
+        raise ValueError("chunk_id must match [A-Za-z0-9._-]+")
     fasta = Path(options.fasta_file)
     if not fasta.is_file():
         raise ValueError("fasta_file must be an existing file")
@@ -241,7 +241,7 @@ def validate_output_paths(options: argparse.Namespace, names: set[str]) -> None:
         for directory, suffix in ARTIFACT_SUFFIXES.items()
         for name in sorted(names)
     ]
-    prefix = f"{options.chunk_num}_updated"
+    prefix = f"{options.chunk_id}_updated"
     destinations.extend(
         root / f"{prefix}_{suffix}"
         for suffix in (
@@ -311,7 +311,13 @@ def parse_args(args: SequenceCollection[str] | None = None) -> argparse.Namespac
     )
     parser.add_argument("-p", "--cpus", type=int, default=8)
     parser.add_argument(
-        "-n", "--chunk_num", default="1", help="prefix for the per-chunk aggregate files only"
+        "-n",
+        "--chunk_id",
+        # ponytail: pre-2.1 spelling, kept as an alias. Drop it at 3.0.0.
+        "--chunk_num",
+        dest="chunk_id",
+        default="1",
+        help="prefix for the per-chunk aggregate files only",
     )
     parser.add_argument("--discard_min_rep_length", type=int, default=75)
     parser.add_argument("--discard_max_rep_length", type=int, default=2000)
@@ -390,7 +396,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
     root = options.output_dir
     prepare_output_directories(root, [name for name, _ in models])
     index_path = resolve_index(options, root)
-    logger = configure_logger(root / f"{options.chunk_num}_updated.log")
+    logger = configure_logger(root / f"{options.chunk_id}_updated.log")
 
     started = time.monotonic()
     total_batches = -(-len(models) // options.batch_size)
@@ -417,7 +423,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                 pyhmmer.easel.SequenceFile(options.fasta_file, digital=True, alphabet=ALPHABET)
             )
             targets = target_file.read_block() if options.prefetch_targets else target_file
-            writers = open_writers(stack, root, options.chunk_num, indexed_sequences)
+            writers = open_writers(stack, root, options.chunk_id, indexed_sequences)
 
             success_count = 0
             processed = 0
@@ -526,7 +532,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                         success_count = emit_family(
                             family,
                             success_count,
-                            options.chunk_num,
+                            options.chunk_id,
                             writers,
                             family_name=name,
                             family_id=name,
@@ -540,7 +546,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                         emit_family(
                             family,
                             success_count,
-                            options.chunk_num,
+                            options.chunk_id,
                             writers,
                             family_name=name,
                             family_id=name,

@@ -211,7 +211,7 @@ would break.
 - **A family's identity is its model's `NAME`, and it must reach every output.** Filenames
   are the easy half. `<chunk>_updated_metadata.csv`, `<chunk>_updated_families.tsv`,
   `converged.txt` and the `reps.fasta.gz` annotation all carry it too, and the annotation is
-  where a `f"{chunk}_{id}"` reconstruction hid until a review caught it: with `--chunk_num 9`
+  where a `f"{chunk}_{id}"` reconstruction hid until a review caught it: with `--chunk_id 9`
   and a preserved `1_7` it wrote `9_1_7`. Guard:
   `test_identity_is_preserved_in_every_field_not_only_in_filenames`, which deliberately runs
   a chunk number unrelated to the names.
@@ -224,7 +224,7 @@ would break.
   byte-for-byte. Guard:
   `test_library_and_directory_inputs_agree_despite_adversarial_ordering`.
 - **Refuse foreign families, then clear accepted names before a retry.** An updated
-  family keeps its model's name, so `--chunk_num` cannot establish artifact ownership.
+  family keeps its model's name, so `--chunk_id` cannot establish artifact ownership.
   A smaller input set over a larger output set is refused before deleting anything.
   After collision validation, clear all four exact artifact paths for each input name:
   discarded families must leave no old models, and recruit-only retries must leave no

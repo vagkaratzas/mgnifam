@@ -52,7 +52,7 @@ def cli_args(
         str(fasta),
         "--cpus",
         str(cpus),
-        "--chunk_num",
+        "--chunk_id",
         chunk,
         "--discard_min_rep_length",
         "100",
@@ -1235,7 +1235,7 @@ def test_extracted_records_do_not_retain_pyhmmer_results(
 @pytest.mark.parametrize(
     ("change", "expected"),
     [
-        ({"chunk_num": "../evil"}, "chunk_num"),
+        ({"chunk_id": "../evil"}, "chunk_id"),
         ({"cpus": 0}, "cpus"),
         ({"max_gap_occupancy": 1.1}, "max_gap_occupancy"),
         ({"discard_min_rep_length": 3000}, "minimum"),

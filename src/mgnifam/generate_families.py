@@ -1025,7 +1025,7 @@ def emit_family(
                     f"{family.ever_converged}\n"
                 )
                 # `family_name`, not a second `f"{chunk}_{id}"`: with a preserved name and
-                # an unrelated `--chunk_num` that reconstruction produced `9_1_7`, breaking
+                # an unrelated `--chunk_id` that reconstruction produced `9_1_7`, breaking
                 # identity in the one file that maps a representative back to its family.
                 writers.family_representatives.write(
                     f">{sequence_name}\t{family_name}\n{residues}\n"
@@ -1066,7 +1066,9 @@ def parse_args(args: SequenceCollection[str] | None = None) -> argparse.Namespac
     parser.add_argument("-c", "--clusters_chunk", required=True)
     parser.add_argument("-f", "--fasta_file", required=True)
     parser.add_argument("-p", "--cpus", type=int, default=8)
-    parser.add_argument("-n", "--chunk_num", default="1")
+    # ponytail: `--chunk_num` is the pre-2.1 spelling of `--chunk_id`, kept as an alias
+    # so existing callers keep working. Drop it at 3.0.0.
+    parser.add_argument("-n", "--chunk_id", "--chunk_num", dest="chunk_id", default="1")
     parser.add_argument("--discard_min_rep_length", type=int, default=75)
     parser.add_argument("--discard_max_rep_length", type=int, default=2000)
     parser.add_argument("--discard_min_starting_membership", type=float, default=0.9)
@@ -1088,8 +1090,8 @@ def is_gzipped(path: Path) -> bool:
 
 
 def validate_inputs(options: argparse.Namespace) -> dict[str, list[str]]:
-    if CHUNK_PATTERN.fullmatch(options.chunk_num) is None:
-        raise ValueError("chunk_num must match [A-Za-z0-9._-]+")
+    if CHUNK_PATTERN.fullmatch(options.chunk_id) is None:
+        raise ValueError("chunk_id must match [A-Za-z0-9._-]+")
     fasta = Path(options.fasta_file)
     if not fasta.is_file():
         raise ValueError("fasta_file must be an existing file")
@@ -1204,9 +1206,9 @@ def main(args: SequenceCollection[str] | None = None) -> None:
         options.batch_size = 2 * options.cpus
 
     root = options.output_dir
-    prepare_output_directories(root, options.chunk_num)
+    prepare_output_directories(root, options.chunk_id)
     index_path = resolve_index(options, root)
-    logger = configure_logger(root / f"{options.chunk_num}.log")
+    logger = configure_logger(root / f"{options.chunk_id}.log")
 
     started = time.monotonic()
     total_batches = -(-len(clusters) // options.batch_size)
@@ -1236,22 +1238,22 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                 root=root,
                 indexed=indexed_sequences,
                 refined_families=stack.enter_context(
-                    (root / f"{options.chunk_num}_families.tsv").open("w")
+                    (root / f"{options.chunk_id}_families.tsv").open("w")
                 ),
                 discarded_clusters=stack.enter_context(
-                    (root / f"{options.chunk_num}_discarded.csv").open("w")
+                    (root / f"{options.chunk_id}_discarded.csv").open("w")
                 ),
                 successful_clusters=stack.enter_context(
-                    (root / f"{options.chunk_num}_successful.txt").open("w")
+                    (root / f"{options.chunk_id}_successful.txt").open("w")
                 ),
                 converged_families=stack.enter_context(
-                    (root / f"{options.chunk_num}_converged.txt").open("w")
+                    (root / f"{options.chunk_id}_converged.txt").open("w")
                 ),
                 family_metadata=stack.enter_context(
-                    (root / f"{options.chunk_num}_metadata.csv").open("w")
+                    (root / f"{options.chunk_id}_metadata.csv").open("w")
                 ),
                 family_representatives=stack.enter_context(
-                    deterministic_gzip_text(root / f"{options.chunk_num}_reps.fasta.gz")
+                    deterministic_gzip_text(root / f"{options.chunk_id}_reps.fasta.gz")
                 ),
             )
             # Written here rather than in `emit_family`, which runs per family: a chunk
@@ -1333,7 +1335,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                     emitted = False
                     with family_guard(family, logger, "artifact writing"):
                         success_count = emit_family(
-                            family, success_count, options.chunk_num, writers
+                            family, success_count, options.chunk_id, writers
                         )
                         emitted = True
                     if not emitted:
@@ -1341,7 +1343,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                         # emit it. This stays outside the guard because a dead output sink
                         # cannot record its own failure and must exit 1 rather than claim
                         # coherent output.
-                        emit_family(family, success_count, options.chunk_num, writers)
+                        emit_family(family, success_count, options.chunk_id, writers)
                 processed += len(active)
                 crashed += sum(
                     1

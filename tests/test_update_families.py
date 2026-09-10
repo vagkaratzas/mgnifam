@@ -142,7 +142,7 @@ def test_skip_refine_searches_once_and_refine_at_most_three_times(
 def test_identity_is_preserved_in_every_field_not_only_in_filenames(
     tmp_path: Path, generated: Path, extra_fasta: Path
 ) -> None:
-    """`--chunk_num` is 9 while the names carry a `1_` prefix.
+    """`--chunk_id` is 9 while the names carry a `1_` prefix.
 
     Any field that rebuilt the name as `f"{chunk}_{id}"` would read `9_1_7` here, which is
     exactly how the representative FASTA annotation was found to be wrong.
@@ -502,7 +502,7 @@ def test_a_directory_holding_another_runs_families_is_refused(
     """Refused rather than cleared, because an updated family's name cannot be derived.
 
     `generate_families` clears its own past output from a `<chunk>_<rank>` pattern. An
-    updated family keeps its model's name and `--chunk_num` never enters a per-family
+    updated family keeps its model's name and `--chunk_id` never enters a per-family
     filename, so nothing on disk says which run wrote `hmm/1_7.hmm.gz`. Writing a smaller
     set over a larger one would leave the dropped families beside aggregates that no longer
     list them.

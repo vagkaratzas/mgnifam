@@ -30,7 +30,7 @@ version ranges instead — may produce different results on a different resoluti
 
   A family's name comes from its model's `NAME` field and is preserved verbatim, so
   `<chunk>_updated_metadata.csv`'s `family_id` column holds a name like `1_7` rather than a
-  rank, and `--chunk_num` labels only the per-chunk aggregate files. Chunks sharing an output
+  rank, and `--chunk_id` labels only the per-chunk aggregate files. Chunks sharing an output
   root must own disjoint family names.
 
   `<chunk>_updated_delta.csv` reports one row per family — the model length before and after,
@@ -46,6 +46,12 @@ version ranges instead — may produce different results on a different resoluti
   family's name carries nothing that says which run wrote it.
 
 ### Changed
+
+- `-n, --chunk_num` is now `-n, --chunk_id` in both `generate_families` and
+  `update_families`. The value was never a number: it is a string matching
+  `[A-Za-z0-9._-]+` that names the chunk, and in `generate_families` it also forms the
+  `<chunk_id>_<rank>` family names. `--chunk_num` still works as an alias and will be
+  removed in 3.0.0.
 
 - **Breaking:** a chunk that completes after containing one or more internal family
   errors now exits 3 instead of 0. Every crashed family is still recorded in

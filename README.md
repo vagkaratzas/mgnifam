@@ -68,7 +68,7 @@ uv run mgnifam generate_families \
     --fasta_file mgnifams_input.fa \
     --output_dir output \
     --cpus 8 \
-    --chunk_num 1 \
+    --chunk_id 1 \
     --discard_min_rep_length 75 \
     --discard_max_rep_length 2000 \
     --discard_min_starting_membership 0.9 \
@@ -92,7 +92,7 @@ of an error.
 | flag | default | meaning |
 |---|---|---|
 | `--cpus` | `8` | Threads for FAMSA, `hmmsearch` and `hmmalign`. |
-| `--chunk_num` | `1` | Prefix for every output file and directory. Must match `[A-Za-z0-9._-]+`. |
+| `--chunk_id` | `1` | Namespace for this chunk: it prefixes every output file and directory, and every family is named `<chunk_id>_<rank>`. Any string matching `[A-Za-z0-9._-]+` — it need not be numeric. |
 | `--discard_min_rep_length` | `75` | Discard a cluster whose representative is shorter than this. |
 | `--discard_max_rep_length` | `2000` | Discard a cluster whose representative is longer than this. |
 | `--discard_min_starting_membership` | `0.9` | Discard a family if fewer than this fraction of the original cluster members are still recruited by the final model. |
@@ -157,7 +157,7 @@ Every threshold flag from `generate_families` carries over with the same name an
 | flag | meaning |
 |---|---|
 | `--skip_refine` | Recruit once and align. The model, seed MSA and RF line are unchanged, so only `hmm/` and `full_msa/` are written and `--max_seq_identity`, `--max_seed_seqs` and `--max_gap_occupancy` are inert. Without it, the full three-round refine loop runs and writes the complete artifact set. |
-| `--chunk_num` | Labels the per-chunk aggregate files **only**. Family names come from the models, so nothing is renumbered. |
+| `--chunk_id` | Labels the per-chunk aggregate files **only**. Family names come from the models, so nothing is renumbered. |
 
 ### What identity means here
 
@@ -168,7 +168,7 @@ consequences:
 - `<chunk>_updated_metadata.csv`'s `family_id` column holds `1_7`, not a bare integer. That
   differs from `generate_families`, whose ids are a rank.
 - Chunks sharing one output root **must own disjoint family names**. Nothing enforces it,
-  because the names come from the input models rather than from `--chunk_num`.
+  because the names come from the input models rather than from `--chunk_id`.
 
 A `NAME` must match `[A-Za-z0-9._-]+` and be neither `.` nor `..`. It is interpolated into
 artifact paths and into CSV fields, and it arrives from a file this tool did not write.
@@ -202,7 +202,7 @@ Give each run its own `--output_dir`. Re-running the same models into the same d
 allowed, so a failed chunk can be retried in place. Running a *smaller* set of models over a
 directory that still holds a larger one is refused rather than silently cleaned up:
 `generate_families` can clear its own past output because it derives names as
-`<chunk>_<rank>`, but an updated family keeps its model's name and `--chunk_num` never
+`<chunk>_<rank>`, but an updated family keeps its model's name and `--chunk_id` never
 appears in a per-family filename, so nothing on disk says which run wrote `hmm/1_7.hmm.gz`.
 
 Input files must not overlap output paths, including through symlinks or hard links.
@@ -222,7 +222,7 @@ console script.
 
 ## Outputs
 
-Written under `--output_dir` (default: `output`), keyed by `--chunk_num`:
+Written under `--output_dir` (default: `output`), keyed by `--chunk_id`:
 
 One file per family, so one directory each:
 
