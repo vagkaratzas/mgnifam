@@ -355,7 +355,8 @@ def extract_records(top_hits: Any) -> list[Record]:
     """Flatten a TopHits into (name, target_length, env_from, env_to) tuples.
 
     Only hits and domains that cleared the pipeline's reporting thresholds are
-    returned, in HMMER's own ranking order.
+    returned. Hits retain HMMER's ranking order, while each hit's domains are
+    ordered from highest to lowest score.
 
     Two constraints drive this:
 
@@ -372,7 +373,7 @@ def extract_records(top_hits: Any) -> list[Record]:
     return [
         (hit.name, hit.length, domain.env_from, domain.env_to)
         for hit in top_hits.reported
-        for domain in hit.domains.reported
+        for domain in sorted(hit.domains.reported, key=lambda domain: domain.score, reverse=True)
     ]
 
 
@@ -422,8 +423,9 @@ def run_hmmalign(
 def msa_stats(msa: pyhmmer.easel.TextMSA) -> tuple[int, int]:
     """Return (sequence count, ungapped length of the first row).
 
-    Row 0 is the family representative: hits arrive in HMMER's ranking order, so the
-    best-scoring sequence leads the alignment.
+    Row 0 is the family representative: hits retain HMMER's ranking order and their
+    domains are ordered by score, so the best-scoring domain of the top hit leads the
+    alignment.
     """
     number_of_sequences = len(msa.names)
     non_gap_representative_length = (
@@ -644,6 +646,16 @@ class Family:
     discard_reason: str = ""
     discard_value: int | float = 0.0
     ever_converged: bool = False
+    # Set only by `update_families`, whose families start with no cluster to be scored
+    # against: the first round's own recruits become that yardstick. `advance` clears it
+    # after using it, so only round 1 adopts. `generate_families` never sets it -- its
+    # members come from the cluster TSV and must not be overwritten by a round's hits.
+    adopt_recruits_as_members: bool = False
+    # `finish` computes the membership fraction into a local and may then discard on
+    # representative length two statements later, destroying the only record of it. Kept
+    # here so a caller reporting on the run can read it afterwards; `discard` does not
+    # clear it, because it is a scalar and not what pins memory.
+    membership: float | None = None
 
     def discard(self, reason: str, value: int | float) -> None:
         self.state = FamilyState.DISCARDED
@@ -700,6 +712,14 @@ class Family:
             self.discard("low complexity model - confounding cluster", 0.0)
             return
 
+        if self.adopt_recruits_as_members:
+            # Cleared here, in the block that reads it, so only the first round a family
+            # reaches adopts. A later round must be scored against round 1's recruitment,
+            # not against its own -- otherwise the membership check compares a model to
+            # itself and can never fail.
+            self.members = unmask_sequence_names(filtered_sequences)
+            self.adopt_recruits_as_members = False
+
         recruited_names = set(unmask_sequence_names(filtered_sequences))
         new_recruited_sequences = recruited_names - self.total_checked_sequences
         self.total_checked_sequences.update(new_recruited_sequences)
@@ -751,6 +771,7 @@ class Family:
             return
 
         membership = check_seed_membership(self.members, unmask_sequence_names(filtered_sequences))
+        self.membership = membership
         if membership < options.discard_min_starting_membership:
             self.discard("few seed sequences remained", membership)
             return
@@ -786,6 +807,9 @@ class Writers:
     converged_families: IO[str]
     family_metadata: IO[str]
     family_representatives: IO[str]
+    # `update_families` only. Its per-family delta row is the point of an update run, so it
+    # commits alongside the other shared appends rather than in a pass of its own.
+    family_delta: IO[str] | None = None
 
 
 @contextlib.contextmanager
@@ -829,16 +853,45 @@ def family_guard(family: Family, logger: logging.Logger, stage: str) -> Generato
         family.discard(f"{INTERNAL_ERROR_PREFIX}{stage}".replace(",", " "), 0.0)
 
 
+def write_delta(writers: Writers, delta_row: str | None) -> None:
+    """Append one `update_families` delta row, if this run is producing them."""
+    if delta_row is not None and writers.family_delta is not None:
+        writers.family_delta.write(delta_row)
+
+
 def emit_family(
     family: Family,
     success_count: int,
     chunk: str,
     writers: Writers,
+    *,
+    family_name: str | None = None,
+    family_id: str | int | None = None,
+    final_hmm: pyhmmer.plan7.HMM | None = None,
+    delta_row: str | None = None,
 ) -> int:
     """Write a finished family's artifacts and return the new successful-family count.
 
     Must be called once per family, in cluster-file order: `provisional_id` is derived
     from how many families succeeded before this one.
+
+    The four keyword arguments exist for `update_families`, which refreshes families that
+    already have names and models. Each defaults to exactly what this function did before
+    they existed, so `generate_families` is unaffected:
+
+    * `family_name` / `family_id` override the rank-derived identity. An updated family
+      keeps the name its model already carries, so its id is a string like `1_7` rather
+      than an integer -- which is why the success return below is `success_count + 1` and
+      not the id.
+    * `final_hmm` supplies the model instead of building one from the seed by hand. A
+      recruit-only update did not change the model, and re-deriving it would be a
+      different one.
+    * `delta_row` is a preformatted line for `writers.family_delta`, committed on both
+      exit paths beside the other shared appends.
+
+    A family may arrive with no seed MSA at all -- a recruit-only update never builds one,
+    because a seed cannot be recovered from an HMM. The `rf/` and `seed_msa/` artifacts
+    are then simply not written, and the caller keeps the originals they still describe.
 
     Only successful families are written to `converged_families`; discarded families
     never receive an id or appear in that file.
@@ -865,19 +918,35 @@ def emit_family(
     largest family in the batch.
     """
     provisional_id = success_count + 1
+    if family_name is None:
+        family_name = f"{chunk}_{provisional_id}"
+    if family_id is None:
+        family_id = provisional_id
+
     if family.state is FamilyState.DISCARDED:
-        writers.discarded_clusters.write(
-            f"{family.representative},{family.discard_reason},{family.discard_value}\n"
-        )
+        # Under the same `ChunkCorrupted` boundary as the success path below. This append
+        # was left out of the hardening that gave the success path one, so a failure here
+        # was contained by `family_guard` and re-emitted -- which calls this function
+        # again and appends the row a second time. A partial first write followed by a
+        # successful retry duplicated it.
+        try:
+            writers.discarded_clusters.write(
+                f"{family.representative},{family.discard_reason},{family.discard_value}\n"
+            )
+            write_delta(writers, delta_row)
+        except Exception as error:
+            raise ChunkCorrupted(
+                f"discard commit failed for family {family.representative}"
+            ) from error
         return success_count
 
-    family_name = f"{chunk}_{provisional_id}"
-    seed_msa = cast(pyhmmer.easel.DigitalMSA, family.seed_msa)
+    seed_msa = family.seed_msa
     full_msa = cast(pyhmmer.easel.TextMSA, family.full_msa)
     # No size guard: round 1 can never converge, so every seed reaching here came from a
     # `run_pytrimal_reps` that passed `advance`'s `<= 2` check and `hmmbuild` cannot hit
     # eslEMEM. A guard would have to record a discard, and discards are results.
-    final_hmm = run_hmmbuild(seed_msa, family_name, hand=True)
+    if final_hmm is None:
+        final_hmm = run_hmmbuild(cast(pyhmmer.easel.DigitalMSA, seed_msa), family_name, hand=True)
     final_hmm.name = family_name
     # Builder stamps DATE from the wall clock and COM from sys.argv. Both are serialised
     # into the HMM, and DATE is formatted through the locale. Dropping them is what makes
@@ -885,10 +954,12 @@ def emit_family(
     final_hmm.creation_time = None
     final_hmm.command_line = None
 
-    if seed_msa.reference is None:
-        raise ValueError("successful seed MSA has no RF reference annotation")
     indexed = cast(IndexedSequences, writers.indexed)
-    renumbered_seed = renumber_msa(seed_msa.textize(), family_name, indexed)
+    renumbered_seed = None
+    if seed_msa is not None:
+        if seed_msa.reference is None:
+            raise ValueError("successful seed MSA has no RF reference annotation")
+        renumbered_seed = renumber_msa(seed_msa.textize(), family_name, indexed)
     renumbered_full = renumber_msa(full_msa, family_name, indexed)
     # Checked here rather than left to the row loop's `zip(strict=True)`: that loop runs
     # after the shared handles have been appended to, so a raise there would put this
@@ -903,19 +974,20 @@ def emit_family(
     # later family in the chunk succeeds. Unlinking on the way out removes the case.
     written: list[Path] = []
     try:
-        rf_path = writers.root / "rf" / f"{family_name}.txt"
-        written.append(rf_path)
-        rf_path.write_text(seed_msa.reference, encoding="utf-8")
+        if seed_msa is not None:
+            rf_path = writers.root / "rf" / f"{family_name}.txt"
+            written.append(rf_path)
+            rf_path.write_text(cast(str, seed_msa.reference), encoding="utf-8")
 
         hmm_path = writers.root / "hmm" / f"{family_name}.hmm.gz"
         written.append(hmm_path)
         with deterministic_gzip_binary(hmm_path) as handle:
             final_hmm.write(handle)
 
-        for directory, msa in (
-            ("seed_msa", renumbered_seed),
-            ("full_msa", renumbered_full),
-        ):
+        alignments = [("full_msa", renumbered_full)]
+        if renumbered_seed is not None:
+            alignments.insert(0, ("seed_msa", renumbered_seed))
+        for directory, msa in alignments:
             path = writers.root / directory / f"{family_name}.sto.gz"
             # Recorded before the write, so a file that failed half-created is removed.
             written.append(path)
@@ -935,31 +1007,37 @@ def emit_family(
 
     try:
         if family.ever_converged:
-            writers.converged_families.write(f"{provisional_id}\n")
+            writers.converged_families.write(f"{family_id}\n")
         writers.successful_clusters.write(f"{family.representative}\n")
         # `names` are `str`: this MSA was built by `renumber_msa` out of `TextSequence`s. Only
         # pytrimal hands back `bytes`, and that is decoded in `pytrimal_to_pyhmmer`.
         for row_number, (sequence_name, row) in enumerate(
             zip(renumbered_full.names, renumbered_full.alignment, strict=True)
         ):
-            writers.refined_families.write(f"{provisional_id}\t{sequence_name}\n")
+            writers.refined_families.write(f"{family_id}\t{sequence_name}\n")
             if row_number == 0:
-                # Row 0 is the representative: hits arrive in HMMER's ranking order.
+                # Row 0 is the representative: the top hit's highest-scoring domain leads.
                 residues = re.sub(r"[.\-~]", "", row).upper()
                 protein, _, region = sequence_name.partition("/")
                 writers.family_metadata.write(
-                    f'{provisional_id},{family.full_msa_num_seqs},"{protein}",'
+                    f'{family_id},{family.full_msa_num_seqs},"{protein}",'
                     f"{region or '-'},{len(residues)},{residues},{final_hmm.consensus},"
                     f"{family.ever_converged}\n"
                 )
+                # `family_name`, not a second `f"{chunk}_{id}"`: with a preserved name and
+                # an unrelated `--chunk_id` that reconstruction produced `9_1_7`, breaking
+                # identity in the one file that maps a representative back to its family.
                 writers.family_representatives.write(
-                    f">{sequence_name}\t{chunk}_{provisional_id}\n{residues}\n"
+                    f">{sequence_name}\t{family_name}\n{residues}\n"
                 )
+        write_delta(writers, delta_row)
     except Exception as error:
         raise ChunkCorrupted(
             f"shared output commit failed for family {family.representative}"
         ) from error
-    return provisional_id
+    # Not `family_id`: that may be a preserved name like "1_7", and this return is the
+    # caller's running count of successes, not an identifier.
+    return success_count + 1
 
 
 def load_clusters(path: str | os.PathLike[str]) -> dict[str, list[str]]:
@@ -988,7 +1066,9 @@ def parse_args(args: SequenceCollection[str] | None = None) -> argparse.Namespac
     parser.add_argument("-c", "--clusters_chunk", required=True)
     parser.add_argument("-f", "--fasta_file", required=True)
     parser.add_argument("-p", "--cpus", type=int, default=8)
-    parser.add_argument("-n", "--chunk_num", default="1")
+    # ponytail: `--chunk_num` is the pre-2.1 spelling of `--chunk_id`, kept as an alias
+    # so existing callers keep working. Drop it at 3.0.0.
+    parser.add_argument("-n", "--chunk_id", "--chunk_num", dest="chunk_id", default="1")
     parser.add_argument("--discard_min_rep_length", type=int, default=75)
     parser.add_argument("--discard_max_rep_length", type=int, default=2000)
     parser.add_argument("--discard_min_starting_membership", type=float, default=0.9)
@@ -1010,8 +1090,8 @@ def is_gzipped(path: Path) -> bool:
 
 
 def validate_inputs(options: argparse.Namespace) -> dict[str, list[str]]:
-    if CHUNK_PATTERN.fullmatch(options.chunk_num) is None:
-        raise ValueError("chunk_num must match [A-Za-z0-9._-]+")
+    if CHUNK_PATTERN.fullmatch(options.chunk_id) is None:
+        raise ValueError("chunk_id must match [A-Za-z0-9._-]+")
     fasta = Path(options.fasta_file)
     if not fasta.is_file():
         raise ValueError("fasta_file must be an existing file")
@@ -1126,9 +1206,9 @@ def main(args: SequenceCollection[str] | None = None) -> None:
         options.batch_size = 2 * options.cpus
 
     root = options.output_dir
-    prepare_output_directories(root, options.chunk_num)
+    prepare_output_directories(root, options.chunk_id)
     index_path = resolve_index(options, root)
-    logger = configure_logger(root / f"{options.chunk_num}.log")
+    logger = configure_logger(root / f"{options.chunk_id}.log")
 
     started = time.monotonic()
     total_batches = -(-len(clusters) // options.batch_size)
@@ -1158,22 +1238,22 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                 root=root,
                 indexed=indexed_sequences,
                 refined_families=stack.enter_context(
-                    (root / f"{options.chunk_num}_families.tsv").open("w")
+                    (root / f"{options.chunk_id}_families.tsv").open("w")
                 ),
                 discarded_clusters=stack.enter_context(
-                    (root / f"{options.chunk_num}_discarded.csv").open("w")
+                    (root / f"{options.chunk_id}_discarded.csv").open("w")
                 ),
                 successful_clusters=stack.enter_context(
-                    (root / f"{options.chunk_num}_successful.txt").open("w")
+                    (root / f"{options.chunk_id}_successful.txt").open("w")
                 ),
                 converged_families=stack.enter_context(
-                    (root / f"{options.chunk_num}_converged.txt").open("w")
+                    (root / f"{options.chunk_id}_converged.txt").open("w")
                 ),
                 family_metadata=stack.enter_context(
-                    (root / f"{options.chunk_num}_metadata.csv").open("w")
+                    (root / f"{options.chunk_id}_metadata.csv").open("w")
                 ),
                 family_representatives=stack.enter_context(
-                    deterministic_gzip_text(root / f"{options.chunk_num}_reps.fasta.gz")
+                    deterministic_gzip_text(root / f"{options.chunk_id}_reps.fasta.gz")
                 ),
             )
             # Written here rather than in `emit_family`, which runs per family: a chunk
@@ -1255,7 +1335,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                     emitted = False
                     with family_guard(family, logger, "artifact writing"):
                         success_count = emit_family(
-                            family, success_count, options.chunk_num, writers
+                            family, success_count, options.chunk_id, writers
                         )
                         emitted = True
                     if not emitted:
@@ -1263,7 +1343,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                         # emit it. This stays outside the guard because a dead output sink
                         # cannot record its own failure and must exit 1 rather than claim
                         # coherent output.
-                        emit_family(family, success_count, options.chunk_num, writers)
+                        emit_family(family, success_count, options.chunk_id, writers)
                 processed += len(active)
                 crashed += sum(
                     1

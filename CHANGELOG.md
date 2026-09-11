@@ -7,41 +7,57 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 *Reproducibility*
 
-Repeated runs are byte-identical: same inputs, same lockfile, same outputs —
-regardless of `--cpus`, `--batch_size`, `--prefetch_targets` or `PYTHONHASHSEED`.
-
-That guarantee is scoped to the dependency set resolved in the committed `uv.lock`
-(`uv sync --frozen`). pyhmmer, pyfamsa and pytrimal decide hit retention, alignment
-and serialised bytes, so installing from PyPI — which resolves within the declared
-version ranges instead — may produce different results on a different resolution.
+Repeated runs are byte-identical — same inputs, same outputs — regardless of `--cpus`,
+`--batch_size`, `--prefetch_targets` or `PYTHONHASHSEED`. The guarantee holds for the
+dependency versions pinned in `uv.lock` (`uv sync --frozen`). Installing from PyPI resolves
+pyhmmer, pyfamsa and pytrimal within their declared ranges instead, and a different
+resolution may change results.
 
 ## [2.1.0.dev0] - unreleased
 
+### Added
+
+- **`mgnifam update_families`** refreshes existing family HMMs against a new database by
+  searching the stored models, so each family keeps its name across releases.
+  - `--hmm_input` takes a directory of `.hmm`/`.hmm.gz` files or one multi-model library
+    `.hmm.lib.gz`; both give identical output.
+  - `--skip_refine` recruits once and aligns, leaving model, seed MSA and RF line unchanged.
+    Without it, the full three-round refine loop runs.
+  - Family names come from each model's `NAME` field, so `family_id` in
+    `<chunk>_updated_metadata.csv` holds a name like `1_7`, not a rank. Chunks sharing an
+    output directory must own disjoint family names.
+  - `<chunk>_updated_delta.csv` reports, per family, model length before and after, round-1
+    recruits, final size, retention, rounds run and outcome.
+  - Use a separate `--output_dir` per run. Retrying the same models in place is allowed and
+    clears that run's previous artifacts first; running a smaller model set over a directory
+    holding a larger one is refused. Inputs that overlap an output path, including through
+    symlinks or hard links, are refused before anything is written.
+- `-n, --chunk_num` is renamed `-n, --chunk_id` in both subcommands (`generate_families`, 
+  `udpate_families`), since the value is any string matching `[A-Za-z0-9._-]+`. `--chunk_num` 
+  still works but is planned to be removed in 3.0.0.
+
 ### Changed
 
-- **Breaking:** a chunk that completes after containing one or more internal family
-  errors now exits 3 instead of 0. Every crashed family is still recorded in
-  `<chunk>_discarded.csv`, and the chunk continues through all remaining families before
-  exiting, so its output is complete and self-consistent. Callers that previously ignored
-  the status see unchanged artifacts; callers that check it must now re-run the degraded
-  chunk or explicitly accept those lost clusters. The final `DONE.` log line includes the
-  number of crashed families. Exit 1 remains fatal and marks incomplete output that must
-  not be consumed; exit 2 remains an `argparse` usage error.
+- **Breaking:** a chunk in which one or more families failed with an internal error now
+  exits `3` instead of `0`. The chunk still finishes and its output is complete and
+  consistent; the failed clusters are listed in `<chunk>_discarded.csv`, and the final
+  `DONE.` log line reports how many there were. Re-run the chunk or accept the loss. See
+  *Exit status* in the README.
+- **Breaking:** the representative is now the highest-scoring domain of the top hit, not
+  its leftmost domain. Previously a short leading fragment could become the representative,
+  giving wrong metadata or discarding a healthy family. Output changes for families whose
+  top hit has several domains, and diverges from `reference/legacy_generate_families.py`.
 
 ### Fixed
 
-- A failure after a successful family first appended to shared chunk output could be
-  contained as a discard, putting the same family in generated and discarded outputs.
-  Shared-output commit failures now bypass per-family containment and exit 1, so exit 3
-  structurally means the degraded output is coherent.
-- A failed per-family artifact write could leave earlier artifacts on disk beside its
-  discard row. Artifact writes now roll back every path already attempted; a rollback
-  failure names the paths it could not remove and exits 1 without masking the original
-  write error.
-- Discarded families now release their seed and full alignments, HMM, hit records, and
-  checked-sequence set immediately. This prevents a batch from pinning its dominant memory
-  objects and makes containment of an oversized family's `MemoryError` capable of
-  reclaiming that memory before processing continues.
+- A failed output write could leave a family in both the generated and discarded outputs,
+  leave a partial plus a duplicate `<chunk>_discarded.csv` row, or leave its HMM and
+  alignments on disk beside a discard row. A failed family's partial files are now removed;
+  if a shared per-chunk file cannot be written, or cleanup itself fails, the run exits `1`.
+  Runs that write successfully are unaffected.
+- Discarded families no longer hold their alignments in memory for the rest of the batch,
+  lowering peak memory at large `--batch_size` and letting a run recover from one oversized
+  family's `MemoryError`.
 
 ## [2.0.0] - 2026/07/29
 
