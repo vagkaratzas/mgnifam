@@ -32,8 +32,8 @@ resolution may change results.
     clears that run's previous artifacts first; running a smaller model set over a directory
     holding a larger one is refused. Inputs that overlap an output path, including through
     symlinks or hard links, are refused before anything is written.
-- `-n, --chunk_num` is renamed `-n, --chunk_id` in both subcommands (`generate_families`, 
-  `udpate_families`), since the value is any string matching `[A-Za-z0-9._-]+`. `--chunk_num` 
+- `-n, --chunk_num` is renamed `-n, --chunk_id` in both subcommands (`generate_families`,
+  `udpate_families`), since the value is any string matching `[A-Za-z0-9._-]+`. `--chunk_num`
   still works but is planned to be removed in 3.0.0.
 
 ### Changed
