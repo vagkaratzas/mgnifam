@@ -243,5 +243,7 @@ would break.
 ## Docs that must move together
 
 `README.md`, `CHANGELOG.md`, `AGENTS.md` and the docstrings all describe the same
-guarantees. `PLAN.md` and `PLAN-REVIEW-LOG.md` are a historical record of how the port was
+guarantees. `CHANGELOG.md` states them for users, with contributor-facing differences in an optional
+last `Internal` section: changes since the last release only, no function or test names, no
+within-version fix history. `PLAN.md` and `PLAN-REVIEW-LOG.md` are a historical record of how the port was
 designed and reviewed — read them for *why*, do not update them to reflect new work.
