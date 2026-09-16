@@ -13,7 +13,12 @@ dependency versions pinned in `uv.lock` (`uv sync --frozen`). Installing from Py
 pyhmmer, pyfamsa and pytrimal within their declared ranges instead, and a different
 resolution may change results.
 
-## [2.1.0.dev0] - unreleased
+## [3.0.0] - 2026/09/16
+
+A major version because three documented behaviours change: `--chunk_num` is removed in
+favour of `--chunk_id`, a chunk with internal family failures exits `3` instead of `0`, and
+the representative is chosen differently, which changes output for some families. All three
+are listed under *Changed* below.
 
 ### Added
 
@@ -40,12 +45,13 @@ resolution may change results.
   of the protein `3387826881/v1`. Both spellings are read identically and the existing one
   is unchanged, so no database or fixture needs regenerating. As before, bounds count as
   coordinates only if they span the record exactly. See *Sequence names* in the README.
-- `-n, --chunk_num` is renamed `-n, --chunk_id` in both subcommands (`generate_families`,
-  `udpate_families`), since the value is any string matching `[A-Za-z0-9._-]+`. `--chunk_num`
-  still works but is planned to be removed in 3.0.0.
 
 ### Changed
 
+- **Breaking:** `generate_families -n, --chunk_num` is renamed `-n, --chunk_id`, since the
+  value is any string matching `[A-Za-z0-9._-]+`. `--chunk_num` is no longer accepted:
+  replace it with `--chunk_id` or `-n`. The new `update_families` takes the same
+  `-n, --chunk_id`.
 - **Breaking:** a chunk in which one or more families failed with an internal error now
   exits `3` instead of `0`. The chunk still finishes and its output is complete and
   consistent; the failed clusters are listed in `<chunk>_discarded.csv`, and the final

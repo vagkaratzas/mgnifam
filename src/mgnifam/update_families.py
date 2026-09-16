@@ -313,9 +313,6 @@ def parse_args(args: SequenceCollection[str] | None = None) -> argparse.Namespac
     parser.add_argument(
         "-n",
         "--chunk_id",
-        # ponytail: pre-2.1 spelling, kept as an alias. Drop it at 3.0.0.
-        "--chunk_num",
-        dest="chunk_id",
         default="1",
         help="prefix for the per-chunk aggregate files only",
     )
