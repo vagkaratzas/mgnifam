@@ -33,6 +33,7 @@ nothing may be written until a family's fate is known. See `emit_family`.
 
 import argparse
 import contextlib
+import csv
 import gzip
 import io
 import itertools
@@ -930,8 +931,11 @@ def emit_family(
         # again and appends the row a second time. A partial first write followed by a
         # successful retry duplicated it.
         try:
-            writers.discarded_clusters.write(
-                f"{family.representative},{family.discard_reason},{family.discard_value}\n"
+            # Representatives come from the input FASTA, which reserves no alphabet, so a
+            # comma or quote in a name has to be quoted rather than interpolated. With the
+            # default `QUOTE_MINIMAL` a name needing neither is written exactly as before.
+            csv.writer(writers.discarded_clusters, lineterminator="\n").writerow(
+                (family.representative, family.discard_reason, family.discard_value)
             )
             write_delta(writers, delta_row)
         except Exception as error:
@@ -1019,8 +1023,14 @@ def emit_family(
                 # Row 0 is the representative: the top hit's highest-scoring domain leads.
                 residues = re.sub(r"[.\-~]", "", row).upper()
                 protein, _, region = sequence_name.partition("/")
+                # The column is quoted unconditionally, which already survives a comma; an
+                # embedded quote still has to be doubled or it closes the field early and
+                # `csv` silently hands back a different identity. Kept as an f-string rather
+                # than a `csv.writer` row so the always-quoted convention holds: under
+                # `QUOTE_MINIMAL` every ordinary name would lose its quotes.
+                quoted_protein = protein.replace('"', '""')
                 writers.family_metadata.write(
-                    f'{family_id},{family.full_msa_num_seqs},"{protein}",'
+                    f'{family_id},{family.full_msa_num_seqs},"{quoted_protein}",'
                     f"{region or '-'},{len(residues)},{residues},{final_hmm.consensus},"
                     f"{family.ever_converged}\n"
                 )

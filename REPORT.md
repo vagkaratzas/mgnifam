@@ -119,6 +119,12 @@ including an alias; rejection must leave the input byte-identical.
 
 ## F3 — P2: Accepted sequence names can corrupt CSV output
 
+**DONE.** Discard rows go through `csv.writer` with an explicit `lineterminator`; the metadata
+protein keeps its always-quoted convention with embedded quotes doubled. Names free of both
+characters are byte-identical to before. A regression test round-trips a comma-bearing
+representative and a quote-bearing protein through `csv.DictReader`, asserting column count
+and exact recovered identity. Full suite and all pre-commit hooks passed.
+
 **Pre-existing; shared by both commands where applicable.** Locations:
 [`generate_families.py:933–935`](src/mgnifam/generate_families.py#L933) and
 [`generate_families.py:1022–1025`](src/mgnifam/generate_families.py#L1022).

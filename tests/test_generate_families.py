@@ -17,6 +17,7 @@ deleting them as redundant.
 import argparse
 import ast
 import contextlib
+import csv
 import gc
 import gzip
 import io
@@ -506,6 +507,56 @@ def test_converged_discard_is_not_recorded(tmp_path: Path, monkeypatch: pytest.M
     success_count = gf.emit_family(successful, success_count, "chunk", writers)
     assert success_count == 1
     assert writers.converged_families.getvalue() == "1\n"
+
+
+def test_csv_rows_round_trip_comma_and_quote_bearing_names(tmp_path: Path) -> None:
+    """Both per-chunk CSVs must survive the punctuation a FASTA name is allowed to carry.
+
+    Neither column is drawn from the validated family-name alphabet: they hold whatever
+    the input database called the sequence. Interpolating that produced a fourth field
+    in a three-column discard row, and a metadata protein whose embedded quote closed
+    the field early -- `csv` then recovered a different identity with no error anywhere.
+    """
+    store = FakeSequences({'protein"quote': "AAAA"})
+    for directory in gf.FAMILY_DIRECTORIES:
+        (tmp_path / directory).mkdir()
+    writers = gf.Writers(
+        root=tmp_path,
+        indexed=store,
+        refined_families=io.StringIO(),
+        discarded_clusters=io.StringIO(gf.DISCARDED_HEADER),
+        successful_clusters=io.StringIO(),
+        converged_families=io.StringIO(),
+        family_metadata=io.StringIO(gf.METADATA_HEADER),
+        family_representatives=io.StringIO(),
+    )
+    for handle in (writers.discarded_clusters, writers.family_metadata):
+        handle.seek(0, io.SEEK_END)
+
+    discarded = gf.Family("protein,version", [], state=gf.FamilyState.DISCARDED)
+    discarded.discard_reason = "too few sequences before initial hmmbuild"
+    discarded.discard_value = 1
+    assert gf.emit_family(discarded, 0, "chunk", writers) == 0
+
+    successful = gf.Family(
+        'protein"quote',
+        ['protein"quote'],
+        state=gf.FamilyState.SUCCESSFUL,
+        seed_msa=text_msa(['protein"quote'], ["AAAA"], "xxxx").digitize(gf.ALPHABET),
+        full_msa=text_msa(['protein"quote'], ["AAAA"], "xxxx"),
+        full_msa_num_seqs=1,
+    )
+    assert gf.emit_family(successful, 0, "chunk", writers) == 1
+
+    (discard_row,) = csv.DictReader(io.StringIO(writers.discarded_clusters.getvalue()))
+    assert discard_row == {
+        "representative": "protein,version",
+        "reason": "too few sequences before initial hmmbuild",
+        "value": "1",
+    }
+    (metadata_row,) = csv.DictReader(io.StringIO(writers.family_metadata.getvalue()))
+    assert metadata_row["protein"] == 'protein"quote'
+    assert len(metadata_row) == len(gf.METADATA_HEADER.strip().split(","))
 
 
 def test_failed_artifact_write_leaves_no_row_in_the_shared_files(
