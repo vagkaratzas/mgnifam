@@ -83,6 +83,30 @@ uv run mgnifam generate_families \
 `--fasta_file` must be an **uncompressed** FASTA — Easel cannot seek within a gzip
 stream — and its sequence names must be unique.
 
+#### Sequence names
+
+A record that is a slice of a larger protein may say so in either of two spellings, and
+both are read identically:
+
+| spelling | example | parent protein | region |
+|---|---|---|---|
+| `<protein>_<start>_<end>` | `3387826881_356_472` | `3387826881` | 356–472 |
+| `<base>/<start>-<end>` | `3387826881/356-472` | `3387826881` | 356–472 |
+
+The second is the form this tool *emits*, so `<chunk>_reps.fasta` from one release can be
+used directly as the database for the next without its coordinates being lost. The base
+keeps any slashes it carries: `3387826881/v1/356-472` is region 356–472 of the protein
+`3387826881/v1`.
+
+Bounds are read as coordinates only if they span the record exactly. `scaffold_12_34`
+holding 15 residues is a whole protein named `scaffold_12_34`, not residues 12–34 of
+`scaffold`. Anything else is identity and is kept whole — `3387826881/356_472`,
+`3387826881/356`, `3387826881/v1` and `3387826881/356-472-243` are four distinct protein
+names, none of them carrying a region.
+
+Any other character is allowed in a name, including further slashes. Names are never
+split on their first slash, so two records sharing a prefix stay distinct.
+
 ### Optional flags
 
 Pass every threshold explicitly on a production run. The defaults exist for ad-hoc use;
@@ -254,8 +278,12 @@ Both CSVs carry a header row, so they load with `pandas.read_csv` as they are:
 | `<chunk>_metadata.csv` | `family_id,full_msa_size,protein,region,length,sequence,consensus,converged` |
 | `<chunk>_discarded.csv` | `representative,reason,value` |
 
-`protein` is quoted; `region` is `<start>-<end>` on the parent protein, or `-` when the
-representative spans a whole unsliced record. The representative is the highest-scoring
+`protein` is quoted, with embedded quotes doubled; a `protein` or `representative`
+containing a comma or a quote is escaped, so both files parse with a standard CSV reader.
+`region` is `<start>-<end>` on the parent protein, or `-` when the
+representative spans a whole unsliced record. Those two columns together are the
+`<base>/<start>-<end>` spelling above, which is also how `<chunk>_reps.fasta` names its
+records. The representative is the highest-scoring
 reported domain of HMMER's top-ranked hit. The header is written before the run starts, so
 a chunk that produces no families still yields a parseable file.
 

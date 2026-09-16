@@ -32,6 +32,14 @@ resolution may change results.
     clears that run's previous artifacts first; running a smaller model set over a directory
     holding a larger one is refused. Inputs that overlap an output path, including through
     symlinks or hard links, are refused before anything is written.
+- A database record that is a slice of a larger protein may now be named
+  `<base>/<start>-<end>` as well as `<protein>_<start>_<end>`. The new spelling is the one
+  this tool emits, so `<chunk>_reps.fasta` from one release can be used directly as the
+  database for the next and keeps its coordinates instead of every record being read as a
+  whole protein. The base retains its slashes: `3387826881/v1/356-472` is region 356–472
+  of the protein `3387826881/v1`. Both spellings are read identically and the existing one
+  is unchanged, so no database or fixture needs regenerating. As before, bounds count as
+  coordinates only if they span the record exactly. See *Sequence names* in the README.
 - `-n, --chunk_num` is renamed `-n, --chunk_id` in both subcommands (`generate_families`,
   `udpate_families`), since the value is any string matching `[A-Za-z0-9._-]+`. `--chunk_num`
   still works but is planned to be removed in 3.0.0.
@@ -50,6 +58,14 @@ resolution may change results.
 
 ### Fixed
 
+- A slash in a database sequence name is no longer treated as a separator. Names were
+  split at their first slash, so any identifier containing one was truncated to a name the
+  index does not hold: the lookup raised `KeyError` at artifact-writing time, which was
+  reported as an internal family crash and exited `3` — after the entire database search
+  had already been paid for. Two records sharing a prefix, such as `X/v1` and `X/v2`, also
+  collapsed into one another in the membership and convergence sets, so a family could
+  report full membership on half its proteins. Slashes are now identity: only a trailing
+  `/<start>-<end>` that spans the record is read as coordinates.
 - Sequence names carrying a comma or a double quote no longer corrupt the two per-chunk
   CSVs. A representative such as `protein,version` put a fourth field in a three-column
   `<chunk>_discarded.csv` row, and a protein such as `protein"quote` was written to

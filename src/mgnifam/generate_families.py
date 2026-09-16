@@ -64,6 +64,17 @@ CHUNK_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
 # Per-family artifacts: one file per family, so they get a directory each. Everything
 # else is a single file per chunk and lives flat in the output root as `<chunk>_*`.
 FAMILY_DIRECTORIES = ("seed_msa", "full_msa", "hmm", "rf")
+# The two suffixes a sequence name can carry, and the reason they use different separators.
+# `mask_sequence` clips a record to a hit envelope and appends `/<env_from>_<env_to>`;
+# a record that is itself a slice of a larger protein is spelled either
+# `<protein>_<start>_<end>` -- the original database form -- or `<base>/<start>-<end>`,
+# which is what `parse_protein_name` emits, so a representatives FASTA can be fed back in
+# as the next release's database. Underscore for the envelope and dash for the slice is
+# what keeps the two readable in a name carrying both, `<base>/<start>-<end>/<from>_<to>`.
+# Everything before the matched suffix is identity and is never split further: a database
+# name may contain any number of slashes, and `X/v1` and `X/v2` are different proteins.
+ENVELOPE_SUFFIX = re.compile(r"(.+)/(\d+)_(\d+)")
+SLICE_SUFFIX = re.compile(r"(.+)/(\d+)-(\d+)")
 # Header rows for the two per-chunk CSVs, written by `main` before any result. Column
 # order is the order `emit_family` writes, and must be changed with it.
 METADATA_HEADER = "family_id,full_msa_size,protein,region,length,sequence,consensus,converged\n"
@@ -512,12 +523,26 @@ def clip_ends(msa: pyhmmer.easel.TextMSA, occupancy_threshold: float) -> pyhmmer
     return msa.select(columns=range(start_position, end_position + 1))
 
 
-def extract_first_part(sequence_name: str) -> str:
-    return sequence_name.split("/")[0]
+def strip_envelope(sequence_name: str) -> str:
+    """Return `sequence_name` without the `/<env_from>_<env_to>` suffix `mask_sequence` adds.
+
+    Splitting at the *first* slash instead, as this did, silently truncated every database
+    name that contains one: two distinct records `X/v1` and `X/v2` both collapsed to `X`,
+    so the membership and convergence sets counted one protein where there were two.
+
+    ponytail: shape only, no index lookup. A record genuinely named `X/356_472` is
+    indistinguishable here from record `X` clipped to 356..472, and is read as the latter
+    -- which costs that one name a membership match, nothing more. `parse_protein_name`
+    resolves the same ambiguity against the index because there a wrong reading is a
+    crash or a wrong identity in the output; doing it here would mean fetching every
+    recruited sequence again on every round, which is the one cost this module refuses.
+    """
+    match = ENVELOPE_SUFFIX.fullmatch(sequence_name)
+    return match.group(1) if match else sequence_name
 
 
 def unmask_sequence_names(sequences: Iterable[Sequence]) -> list[str]:
-    return [extract_first_part(name) for name, _ in sequences]
+    return [strip_envelope(name) for name, _ in sequences]
 
 
 def check_seed_membership(
@@ -525,17 +550,23 @@ def check_seed_membership(
 ) -> float:
     """Return the fraction of the cluster's distinct proteins still recruited.
 
-    Both sides are counted after `extract_first_part` and as sets, so the ratio cannot
+    Both sides are counted after `strip_envelope` and as sets, so the ratio cannot
     exceed 1. Dividing by the raw row count instead would let a cluster TSV that repeats
     a member report less than full membership for a family that kept every one of them.
     """
-    original_first_parts = set(map(extract_first_part, original_sequence_names))
-    filtered_first_parts = set(map(extract_first_part, filtered_sequence_names))
-    return len(original_first_parts & filtered_first_parts) / len(original_first_parts)
+    original_records = set(map(strip_envelope, original_sequence_names))
+    filtered_records = set(map(strip_envelope, filtered_sequence_names))
+    return len(original_records & filtered_records) / len(original_records)
 
 
 def split_slice_name(record_name: str, record_length: int) -> tuple[str, int] | None:
-    """Split `<protein>_<start>_<end>` into its parent protein and 1-based start.
+    """Split a slice name into its parent protein and 1-based start.
+
+    Two spellings are accepted: `<protein>_<start>_<end>`, the original database form, and
+    `<base>/<start>-<end>`, the form this module emits. Supporting the second is what lets
+    a representatives FASTA from one release serve as the database for the next without
+    every one of its names being read as a whole protein at invented coordinates. `<base>`
+    keeps its slashes, so `3387826881/v1/356-472` is residue 356 of `3387826881/v1`.
 
     Returns None when `record_name` is not a slice, so the caller reads it as the name of
     a whole protein.
@@ -553,8 +584,12 @@ def split_slice_name(record_name: str, record_length: int) -> tuple[str, int] | 
     field. A name whose trailing fields are not numeric (`contig_1_gene_x`) reached
     `int()` and raised, which `family_guard` then recorded as an internal-error discard.
     """
-    protein, _, end = record_name.rpartition("_")
-    protein, _, start = protein.rpartition("_")
+    slice_match = SLICE_SUFFIX.fullmatch(record_name)
+    if slice_match:
+        protein, start, end = slice_match.group(1), slice_match.group(2), slice_match.group(3)
+    else:
+        protein, _, end = record_name.rpartition("_")
+        protein, _, start = protein.rpartition("_")
     if not protein or not start.isdigit() or not end.isdigit():
         return None
     if int(end) - int(start) + 1 != record_length:
@@ -566,7 +601,8 @@ def parse_protein_name(row_name: str, aligned_row: str, indexed_sequences: Index
     """Rename one alignment row to `<protein>/<start>-<end>` on the parent protein.
 
     Database records are themselves slices of a protein, named `<protein>_<start>_<end>`
-    with 1-based inclusive bounds. `mask_sequence` clips a record further to a hit
+    or `<base>/<start>-<end>` with 1-based inclusive bounds -- see `split_slice_name`.
+    `mask_sequence` clips a record further to a hit
     envelope and appends `/<env_from>_<env_to>`, relative to the record. Column trimming
     (`clip_env_ends`, `clip_ends`, `run_pytrimal_reps`) then drops residues from either
     end of the row, by a different amount per row, so the row's offset within its record
@@ -575,15 +611,32 @@ def parse_protein_name(row_name: str, aligned_row: str, indexed_sequences: Index
     The envelope bounds the search. Locating the residues in the whole record -- what the
     legacy script did -- returns the first match, so two identical repeat domains of one
     protein resolved to the same name and one of them was dropped as a duplicate.
-    """
-    record_name, _, envelope = row_name.partition("/")
-    record = cast(Sequence, indexed_sequences.get(record_name)).seq
-    residues = re.sub(r"[.\-~]", "", aligned_row).upper()
 
-    if envelope:
-        env_from, env_to = (int(bound) for bound in envelope.split("_"))
-    else:
-        env_from, env_to = 1, len(record)
+    The envelope is taken off the end, not at the first slash, and confirmed against the
+    index. Shape cannot settle it alone: a record genuinely named `X/356_472` reads the
+    same as record `X` clipped to 356..472, and only the index knows which of the two
+    exists. Splitting at the first slash instead fetched a truncated name and raised
+    `KeyError`, which `family_guard` recorded as an internal-error discard -- so an
+    ordinary database identifier failed the run after every search had already been paid
+    for, and was reported as a crash rather than as its input.
+    """
+    envelope_match = ENVELOPE_SUFFIX.fullmatch(row_name)
+    record_name = row_name
+    env_bounds: tuple[int, int] | None = None
+    fetched: Sequence | None = None
+    if envelope_match is not None:
+        # The stripped reading is tried first and its record kept, so the masked rows --
+        # which are most of them -- still cost exactly one fetch.
+        fetched = indexed_sequences.get(envelope_match.group(1), missing_ok=True)
+        if fetched is not None:
+            record_name = envelope_match.group(1)
+            env_bounds = (int(envelope_match.group(2)), int(envelope_match.group(3)))
+    if fetched is None:
+        fetched = cast(Sequence, indexed_sequences.get(row_name))
+
+    record = fetched.seq
+    residues = re.sub(r"[.\-~]", "", aligned_row).upper()
+    env_from, env_to = env_bounds if env_bounds is not None else (1, len(record))
     offset = record.find(residues, env_from - 1, env_to)
     if offset < 0:
         raise ValueError(f"{row_name}: aligned residues are not in its envelope of {record_name}")

@@ -382,6 +382,54 @@ def test_underscores_in_protein_names_are_not_mistaken_for_slice_bounds() -> Non
     assert gf.parse_protein_name("scaffold_12_34", repeat, real_slice) == "scaffold/12-21"
 
 
+def test_slash_bearing_names_keep_their_identity_and_round_trip_their_coordinates() -> None:
+    """A slash in a database name is identity, not a separator.
+
+    Splitting at the first slash fetched a truncated name, so every ordinary identifier
+    carrying one raised `KeyError` at emission -- after the whole database search had been
+    paid for -- and `family_guard` reported it as an internal family crash rather than as
+    its input. Distinct records sharing a prefix also collapsed into one another in the
+    membership and convergence sets.
+
+    The `<base>/<start>-<end>` slice form is what `parse_protein_name` itself emits, so a
+    representatives FASTA from one release is a valid database for the next.
+    """
+    repeat = "MKVLAAGIVG"
+    record = f"{repeat}QQQQQ{repeat}QQQQQ"  # 30 residues, spanned by bounds 101..130
+
+    # Both slice spellings name the same protein at the same coordinates.
+    underscore = FakeSequences({"3387826881_101_130": record})
+    slashed = FakeSequences({"3387826881/101-130": record})
+    assert (
+        gf.parse_protein_name("3387826881_101_130/1_10", repeat, underscore) == "3387826881/101-110"
+    )
+    assert gf.parse_protein_name("3387826881/101-130/1_10", repeat, slashed) == "3387826881/101-110"
+
+    # Output is a valid input: renaming the record to what the line above produced and
+    # re-running gives that same name back.
+    fed_back = FakeSequences({"3387826881/101-110": repeat})
+    assert gf.parse_protein_name("3387826881/101-110", repeat, fed_back) == "3387826881/101-110"
+
+    # The base keeps every slash it came with, so a version segment survives.
+    versioned = FakeSequences({"3387826881/v1/101-130": record})
+    assert (
+        gf.parse_protein_name("3387826881/v1/101-130/16_25", repeat, versioned)
+        == "3387826881/v1/116-125"
+    )
+
+    # Names whose trailing segment is not `<digits>-<digits>` are whole identities. Each of
+    # these raised `KeyError` on the truncated prefix before.
+    for name in ("3387826881/101_130", "3387826881/101", "3387826881/v1", "3387826881/101-130-243"):
+        store = FakeSequences({name: repeat})
+        assert gf.parse_protein_name(name, repeat, store) == name
+        assert gf.parse_protein_name(name, repeat[:5], store) == f"{name}/1-5"
+
+    # Two records sharing a prefix are two proteins, not one.
+    assert gf.strip_envelope("3387826881/v1") == "3387826881/v1"
+    assert gf.strip_envelope("3387826881/v1/5_20") == "3387826881/v1"
+    assert gf.check_seed_membership(["3387826881/v1", "3387826881/v2"], ["3387826881/v1"]) == 0.5
+
+
 def test_seed_membership_counts_distinct_proteins_on_both_sides() -> None:
     """Membership is a ratio of distinct proteins, so it can never exceed 1.
 

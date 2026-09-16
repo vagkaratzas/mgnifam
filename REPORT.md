@@ -154,6 +154,18 @@ correctly. No dependency is needed.
 
 ## F4 — P2: Slash-bearing FASTA identifiers fail after recruitment
 
+**DONE.** Raw database identity is now kept separate from envelope coordinates in the shared
+helpers: `strip_envelope` and `parse_protein_name` take the `/<from>_<to>` suffix off the end
+rather than splitting at the first slash, and `parse_protein_name` confirms the split against
+the index, since shape alone cannot tell record `X/356_472` from record `X` clipped to
+356..472. `split_slice_name` additionally accepts `<base>/<start>-<end>`, the form this module
+emits, so a representatives FASTA round-trips as the next release's database; the existing
+`<protein>_<start>_<end>` form is unchanged and no fixture needed regenerating. The
+span-equals-record-length check remains the disambiguator for both spellings. Regression test
+covers both slice spellings, a versioned base, output fed back as input, the four
+identity-only shapes, and two records sharing a prefix staying distinct in the membership set.
+85 tests pass and all pre-commit hooks pass. README gained a *Sequence names* section.
+
 **Pre-existing, now also reachable through `update_families`.** Locations:
 [`generate_families.py:578–583`](src/mgnifam/generate_families.py#L578) and the related
 `extract_first_part()` / `mask_sequence()` name encoding.
