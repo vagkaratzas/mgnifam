@@ -106,6 +106,9 @@ names, none of them carrying a region.
 
 Any other character is allowed in a name, including further slashes. Names are never
 split on their first slash, so two records sharing a prefix stay distinct.
+`X` and a literal `X/1_10` remain distinct even when the same family recruits residues
+1–10 of `X` alongside the complete `X/1_10` record. Literal percent sequences such as
+`%2F` are preserved too, in both update modes and in all emitted identities.
 
 No name is *reserved*, but the slice spelling is not inert either. Whether a record is
 independent of `3387826881` depends on which spelling it uses and on its own length:

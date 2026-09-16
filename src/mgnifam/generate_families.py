@@ -46,7 +46,6 @@ import threading
 import time
 from collections.abc import Generator, Iterable, Iterator, Mapping
 from collections.abc import Sequence as SequenceCollection
-from collections.abc import Set as SetCollection
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -65,16 +64,8 @@ CHUNK_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
 # Per-family artifacts: one file per family, so they get a directory each. Everything
 # else is a single file per chunk and lives flat in the output root as `<chunk>_*`.
 FAMILY_DIRECTORIES = ("seed_msa", "full_msa", "hmm", "rf")
-# The two suffixes a sequence name can carry, and the reason they use different separators.
-# `mask_sequence` clips a record to a hit envelope and appends `/<env_from>_<env_to>`;
-# a record that is itself a slice of a larger protein is spelled either
-# `<protein>_<start>_<end>` -- the original database form -- or `<base>/<start>-<end>`,
-# which is what `parse_protein_name` emits, so a representatives FASTA can be fed back in
-# as the next release's database. Underscore for the envelope and dash for the slice is
-# what keeps the two readable in a name carrying both, `<base>/<start>-<end>/<from>_<to>`.
-# Everything before the matched suffix is identity and is never split further: a database
-# name may contain any number of slashes, and `X/v1` and `X/v2` are different proteins.
-ENVELOPE_SUFFIX = re.compile(r"(.+)/(\d+)_(\d+)")
+# External slice names use dashes. Internal alignment names escape literal slashes
+# before adding an envelope suffix; see `encode_record_name`.
 SLICE_SUFFIX = re.compile(r"(.+)/(\d+)-(\d+)")
 # Header rows for the two per-chunk CSVs, written by `main` before any result. Column
 # order is the order `emit_family` writes, and must be changed with it.
@@ -266,7 +257,11 @@ def run_initial_msa(
     for member in members:
         sequence = indexed_sequences.get(member, missing_ok=True)
         if sequence is not None:
-            sequences.append(pyfamsa.Sequence(id=member.encode(), sequence=sequence.seq.encode()))
+            sequences.append(
+                pyfamsa.Sequence(
+                    id=encode_record_name(member).encode(), sequence=sequence.seq.encode()
+                )
+            )
     if not sequences:
         return None
     # FAMSA's output is independent of the thread count, so honouring `cpus` costs
@@ -390,7 +385,19 @@ def extract_records(top_hits: Any) -> list[Record]:
     ]
 
 
+def encode_record_name(name: str) -> str:
+    """Escape a raw database name for use in an internal alignment row.
+
+    Escape percent first so literal `%2F` and `/` remain distinct. Both initial seeds
+    and recruits use this encoding, including whole records. A literal slash can then
+    only introduce an envelope, even across rounds; ordinary accession names keep
+    their original bytes. Decode only at database lookups and output boundaries.
+    """
+    return name.replace("%", "%25").replace("/", "%2F")
+
+
 def mask_sequence(sequence: Sequence, env_from: int, env_to: int) -> Sequence:
+    """Clip an internally named sequence to its 1-based inclusive hit envelope."""
     return Sequence(f"{sequence.id}/{env_from}_{env_to}", sequence.seq[env_from - 1 : env_to])
 
 
@@ -400,34 +407,26 @@ def filter_hits(
     exit_flag: bool,
     recruit_hit_length_percentage: float,
     indexed_sequences: IndexedSequences,
-) -> tuple[list[Sequence], set[str]]:
+) -> list[Sequence]:
     """Resolve hit records to sequences, keeping those whose envelope is long enough.
 
-    Sequences whose envelope covers only part of the target are masked down to it, and
-    renamed `<name>/<env_from>_<env_to>`.
-
-    Returns those sequences and the names among them that were masked. The set is the
-    point: `<name>/<env_from>_<env_to>` is a shape a database name is free to have, so
-    once the name is all that survives -- which is all an MSA row carries -- a masked
-    `X` is indistinguishable from an unmasked record called `X/<from>_<to>`, and a
-    database holding both is not a contrived one. This is the only place that knows
-    which of the two a row is, so it says so rather than leaving it to be guessed from
-    the string downstream.
+    All returned names are encoded for internal alignment use. Partial targets are
+    clipped and gain `/<env_from>_<env_to>` after that encoding, so masking `X` cannot
+    collide with a literal database record named `X/<env_from>_<env_to>`.
 
     `exit_flag` waives the length requirement. The exit branch calls this a second time
     over the same records, which is why the records are cached rather than re-searched.
     """
     filtered_sequences = []
-    masked_names = set()
     for name, target_length, env_from, env_to in records:
         envelope_length = env_to - env_from + 1
         if exit_flag or envelope_length >= recruit_hit_length_percentage * qlen:
             sequence = cast(Sequence, indexed_sequences.get(name))
+            sequence = Sequence(encode_record_name(name), sequence.seq)
             if envelope_length < target_length:
                 sequence = mask_sequence(sequence, env_from, env_to)
-                masked_names.add(sequence.id)
             filtered_sequences.append(sequence)
-    return filtered_sequences, masked_names
+    return filtered_sequences
 
 
 def run_hmmalign(
@@ -534,26 +533,17 @@ def clip_ends(msa: pyhmmer.easel.TextMSA, occupancy_threshold: float) -> pyhmmer
     return msa.select(columns=range(start_position, end_position + 1))
 
 
-def strip_envelope(sequence_name: str, masked_names: SetCollection[str]) -> str:
-    """Return the database record `sequence_name` came from.
+def strip_envelope(sequence_name: str) -> str:
+    """Recover a raw database name from an encoded internal alignment row.
 
-    A name is stripped only if `filter_hits` reports having masked it. Deciding from the
-    string instead is wrong twice over: splitting at the *first* slash, as this did,
-    truncated every database name containing one, collapsing distinct records `X/v1` and
-    `X/v2` into one protein in the membership and convergence sets; and matching the
-    suffix shape at the end still cannot tell a masked `X` from a record named
-    `X/<from>_<to>`, which a database may legitimately contain alongside `X`.
+    Strip the envelope before decoding and decode percent last, so a literal `%2F`
+    cannot be mistaken for an escaped slash.
     """
-    if sequence_name not in masked_names:
-        return sequence_name
-    match = ENVELOPE_SUFFIX.fullmatch(sequence_name)
-    return match.group(1) if match else sequence_name
+    return sequence_name.partition("/")[0].replace("%2F", "/").replace("%25", "%")
 
 
-def unmask_sequence_names(
-    sequences: Iterable[Sequence], masked_names: SetCollection[str]
-) -> list[str]:
-    return [strip_envelope(name, masked_names) for name, _ in sequences]
+def unmask_sequence_names(sequences: Iterable[Sequence]) -> list[str]:
+    return [strip_envelope(name) for name, _ in sequences]
 
 
 def check_seed_membership(
@@ -614,9 +604,8 @@ def parse_protein_name(
     row_name: str,
     aligned_row: str,
     indexed_sequences: IndexedSequences,
-    masked_names: SetCollection[str],
 ) -> str:
-    """Rename one alignment row to `<protein>/<start>-<end>` on the parent protein.
+    """Rename one encoded alignment row to external parent-protein coordinates.
 
     Database records are themselves slices of a protein, named `<protein>_<start>_<end>`
     or `<base>/<start>-<end>` with 1-based inclusive bounds -- see `split_slice_name`.
@@ -630,20 +619,15 @@ def parse_protein_name(
     legacy script did -- returns the first match, so two identical repeat domains of one
     protein resolved to the same name and one of them was dropped as a duplicate.
 
-    A row is read as masked only if `masked_names` says `filter_hits` masked it, never
-    because its name looks masked: `X/356_472` is both what masking `X` produces and a
-    name a database may hold in its own right, alongside `X`. Splitting at the first
-    slash, as this did, fetched a truncated name and raised `KeyError`, which
-    `family_guard` recorded as an internal-error discard -- so an ordinary database
-    identifier failed the run after every search had been paid for, and was reported as
-    a crash rather than as its input.
+    Literal slashes in database names are escaped in every internal row, so an envelope
+    is unambiguous even when the database contains both `X` and `X/356_472`.
     """
-    envelope_match = ENVELOPE_SUFFIX.fullmatch(row_name) if row_name in masked_names else None
-    record_name = envelope_match.group(1) if envelope_match else row_name
+    record_name = strip_envelope(row_name)
+    _, _, envelope = row_name.partition("/")
     record = cast(Sequence, indexed_sequences.get(record_name)).seq
     residues = re.sub(r"[.\-~]", "", aligned_row).upper()
-    if envelope_match:
-        env_from, env_to = int(envelope_match.group(2)), int(envelope_match.group(3))
+    if envelope:
+        env_from, env_to = (int(bound) for bound in envelope.split("_"))
     else:
         env_from, env_to = 1, len(record)
     offset = record.find(residues, env_from - 1, env_to)
@@ -668,7 +652,6 @@ def renumber_msa(
     msa: pyhmmer.easel.TextMSA,
     family_name: str,
     indexed_sequences: IndexedSequences,
-    masked_names: SetCollection[str],
 ) -> pyhmmer.easel.TextMSA:
     """Return a copy of `msa` whose rows are named in parent-protein coordinates.
 
@@ -681,7 +664,7 @@ def renumber_msa(
         name=family_name.encode(),
         sequences=[
             pyhmmer.easel.TextSequence(
-                name=parse_protein_name(name, row, indexed_sequences, masked_names), sequence=row
+                name=parse_protein_name(name, row, indexed_sequences), sequence=row
             )
             for name, row in zip(msa.names, msa.alignment, strict=True)
         ],
@@ -707,12 +690,6 @@ class Family:
     records: list[Record] = field(default_factory=list)
     qlen: int = 0
     total_checked_sequences: set[str] = field(default_factory=set)
-    # Row names `filter_hits` produced by masking, accumulated across rounds because the
-    # seed and full MSAs held at emission come from different rounds. Without it a row
-    # name is ambiguous against a database that contains both `X` and `X/<from>_<to>`.
-    # Strings only, so it is the same order of memory as `total_checked_sequences` and
-    # not what `discard` exists to release.
-    masked_names: set[str] = field(default_factory=set)
     full_msa: pyhmmer.easel.TextMSA | None = None
     full_msa_num_seqs: int = 0
     discard_reason: str = ""
@@ -738,10 +715,6 @@ class Family:
         self.hmm = None
         self.records = []
         self.total_checked_sequences = set()
-        # A discarded family returns from `emit_family` before `renumber_msa`, so nothing
-        # reads this again. Released with the rest for the same reason they are: it is
-        # per-recruit state and the batch holds every family until the batch ends.
-        self.masked_names = set()
 
     def initialise(self, indexed_sequences: IndexedSequences, cpus: int) -> None:
         """Build the first seed MSA from the cluster's own members.
@@ -777,14 +750,13 @@ class Family:
           ahead of its own model, so the exported HMM described an alignment that was
           never searched with, while the full MSA beside it came from the older model.
         """
-        filtered_sequences, masked_names = filter_hits(
+        filtered_sequences = filter_hits(
             self.records,
             self.qlen,
             False,
             options.recruit_hit_length_percentage,
             indexed_sequences,
         )
-        self.masked_names |= masked_names
         if not filtered_sequences:
             self.discard("low complexity model - confounding cluster", 0.0)
             return
@@ -794,10 +766,10 @@ class Family:
             # reaches adopts. A later round must be scored against round 1's recruitment,
             # not against its own -- otherwise the membership check compares a model to
             # itself and can never fail.
-            self.members = unmask_sequence_names(filtered_sequences, masked_names)
+            self.members = unmask_sequence_names(filtered_sequences)
             self.adopt_recruits_as_members = False
 
-        recruited_names = set(unmask_sequence_names(filtered_sequences, masked_names))
+        recruited_names = set(unmask_sequence_names(filtered_sequences))
         new_recruited_sequences = recruited_names - self.total_checked_sequences
         self.total_checked_sequences.update(new_recruited_sequences)
         if not new_recruited_sequences:
@@ -836,21 +808,18 @@ class Family:
         if self.state not in (FamilyState.RUNNING, FamilyState.CONVERGED):
             return
 
-        filtered_sequences, masked_names = filter_hits(
+        filtered_sequences = filter_hits(
             self.records,
             self.qlen,
             True,
             options.recruit_hit_length_percentage,
             indexed_sequences,
         )
-        self.masked_names |= masked_names
         if not filtered_sequences:
             self.discard("low complexity model - confounding cluster", 0.0)
             return
 
-        membership = check_seed_membership(
-            self.members, unmask_sequence_names(filtered_sequences, masked_names)
-        )
+        membership = check_seed_membership(self.members, unmask_sequence_names(filtered_sequences))
         self.membership = membership
         if membership < options.discard_min_starting_membership:
             self.discard("few seed sequences remained", membership)
@@ -1042,10 +1011,8 @@ def emit_family(
     if seed_msa is not None:
         if seed_msa.reference is None:
             raise ValueError("successful seed MSA has no RF reference annotation")
-        renumbered_seed = renumber_msa(
-            seed_msa.textize(), family_name, indexed, family.masked_names
-        )
-    renumbered_full = renumber_msa(full_msa, family_name, indexed, family.masked_names)
+        renumbered_seed = renumber_msa(seed_msa.textize(), family_name, indexed)
+    renumbered_full = renumber_msa(full_msa, family_name, indexed)
     # Checked here rather than left to the row loop's `zip(strict=True)`: that loop runs
     # after the shared handles have been appended to, so a raise there would put this
     # representative in `successful` and then, through the re-emit, in `discarded` too.

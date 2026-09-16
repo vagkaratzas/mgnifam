@@ -69,9 +69,9 @@ resolution may change results.
   reserved — a database may hold `3387826881` and `3387826881/356_472` as two unrelated
   proteins. A record named `3387826881/356-472` *is* read as a region of `3387826881`
   when its length matches those bounds, which is the round trip above, not a collision.
-  Which rows were clipped to a hit envelope is now carried alongside them from
-  the point they are clipped, rather than inferred afterwards from the name, so the two
-  cannot be confused for one another.
+  A clipped parent and a literal envelope-shaped name remain distinct when recruited
+  together or in different rounds. Literal percent sequences such as `%2F` are preserved
+  in every emitted identity.
 - Sequence names carrying a comma or a double quote no longer corrupt the two per-chunk
   CSVs. A representative such as `protein,version` put a fourth field in a three-column
   `<chunk>_discarded.csv` row, and a protein such as `protein"quote` was written to

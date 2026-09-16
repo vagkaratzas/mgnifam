@@ -10,6 +10,13 @@ Final verification: locked environment checks passed, **83 tests passed**, all
 pre-commit hooks passed, and all 14 library models matched fresh generation.
 No push was performed during that initial follow-up.
 
+**PR #9 follow-up complete (2026-09-16):** all six findings are covered. The metadata
+and simultaneous masking-collision corrections each have a separate commit. Locked
+environment checks, all **94 tests**, and all pre-commit hooks pass. New metadata and
+collision regressions fail against reviewed head `03731f8`. Fresh v2 generation matches
+that head byte-for-byte for every output except the timestamped log; the 14-model library
+therefore remains current. No push was performed.
+
 ## Scope and evidence
 
 - [PR #7: Update families](https://github.com/vagkaratzas/mgnifam/pull/7) was open at
@@ -160,12 +167,17 @@ correctly. No dependency is needed.
 
 ## F4 — P2: Slash-bearing FASTA identifiers fail after recruitment
 
-**DONE.** Raw database identity is now kept separate from envelope coordinates, as suggested:
-`filter_hits` returns the names it masked alongside the sequences, `Family` accumulates them
-across rounds, and `strip_envelope` / `parse_protein_name` consult that set instead of
-re-deriving the split from the string. No sequence name is reserved as a result — a database
-may hold `X` and `X/356_472` as two unrelated proteins, which no string rule can separate,
-since `X/356_472` is exactly what masking `X` to 356..472 produces.
+**DONE.** Raw database identity is kept separate from envelope coordinates by escaping
+literal `%` and `/` in all internal alignment names, before appending an envelope suffix.
+Initial seeds and recruits use the same reversible encoding; raw members and cached hit
+records stay unchanged. Database lookups and final output decode the identity exactly once.
+No external sequence name is reserved, and each retained hit still costs one fetch.
+
+PR #9 review found that its original masking set could not distinguish masked `X` from
+literal `X/1_10` when both were recruited together, or when seed/full MSAs came from
+different rounds. The replacement has no per-family masking state. Indexed-FASTA regressions
+exercise simultaneous collisions in both hit orders, initial seeds, full alignment,
+emission, genuine membership loss, and literal percent-like names.
 
 `split_slice_name` additionally accepts `<base>/<start>-<end>`, the form this module emits, so
 a representatives FASTA round-trips as the next release's database; the existing
@@ -174,8 +186,10 @@ span-equals-record-length check remains the disambiguator for both spellings.
 
 Regression tests cover both slice spellings, a versioned base, output fed back as input, the
 four identity-only shapes, two records sharing a prefix staying distinct in the membership
-set, and the `X` / `X/356_472` collision resolving correctly in both directions. 85 tests pass
-and all pre-commit hooks pass. README gained a *Sequence names* section.
+set, and masked/literal collisions. A real v2 database with slash, comma, quote and percent
+suffixes also runs through search and emission in both update modes, checking metadata,
+representatives, memberships and Stockholm identities against an unrenamed baseline.
+README documents these guarantees in *Sequence names*.
 
 **Pre-existing, now also reachable through `update_families`.** Locations:
 [`generate_families.py:578–583`](src/mgnifam/generate_families.py#L578) and the related

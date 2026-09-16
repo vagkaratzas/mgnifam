@@ -139,6 +139,49 @@ def test_skip_refine_searches_once_and_refine_at_most_three_times(
     assert rounds and max(rounds) <= generate_families.MAX_ROUNDS
 
 
+@pytest.mark.parametrize("skip_refine", [True, False])
+def test_slash_identifiers_survive_search_and_all_emitted_fields(
+    tmp_path: Path, fixture_directory: Path, v2_fasta: Path, skip_refine: bool
+) -> None:
+    """Exercise real recruitment and emission, including punctuation after a slash."""
+    suffix = '/v1,"variant%2F'
+    renamed = tmp_path / "renamed.fa"
+    with v2_fasta.open() as source, renamed.open("w") as destination:
+        for line in source:
+            if line.startswith(">"):
+                fields = line.rstrip("\n").split(maxsplit=1)
+                line = fields[0] + suffix + (" " + fields[1] if len(fields) > 1 else "") + "\n"
+            destination.write(line)
+    library = fixture_directory / "mgnifams_v2.hmm.lib.gz"
+    extra = ["--skip_refine"] if skip_refine else []
+    baseline = update(library, v2_fasta, tmp_path / "baseline", *extra)
+    output = update(library, renamed, tmp_path / "renamed", *extra)
+    assert family_names(output) == family_names(baseline)
+    with (output / "9_updated_metadata.csv").open() as handle:
+        metadata = list(csv.DictReader(handle))
+    with (baseline / "9_updated_metadata.csv").open() as handle:
+        original = list(csv.DictReader(handle))
+    assert len(metadata) >= 13
+    assert [row["full_msa_size"] for row in metadata] == [row["full_msa_size"] for row in original]
+    with gzip.open(output / "9_updated_reps.fasta.gz", "rt") as handle:
+        representatives = [line[1:].split("\t")[0] for line in handle if line.startswith(">")]
+    for row, representative in zip(metadata, representatives, strict=True):
+        assert None not in row
+        assert row["protein"].endswith(suffix)
+        assert (
+            row["protein"] + ("/" + row["region"] if row["region"] != "-" else "") == representative
+        )
+        assert len(row["sequence"]) == int(row["length"])
+    for directory in ("full_msa",) if skip_refine else ("seed_msa", "full_msa"):
+        for path in (output / directory).iterdir():
+            with pyhmmer.easel.MSAFile(path) as handle:
+                assert all(suffix in name for name in handle.read().names)
+    assert all(
+        suffix in row.split("\t")[1]
+        for row in (output / "9_updated_families.tsv").read_text().splitlines()
+    )
+
+
 def test_identity_is_preserved_in_every_field_not_only_in_filenames(
     tmp_path: Path, generated: Path, extra_fasta: Path
 ) -> None:
@@ -612,12 +655,11 @@ def test_round_one_recruits_are_adopted_as_members_exactly_once(
     itself and the membership check could never fail -- which is the whole point of it.
     `advance` clears the flag in the same block that reads it.
     """
-    # Each round returns one masked recruit, reported the way `filter_hits` reports it:
-    # the sequences plus the names it masked.
+    # Each round returns one recruit with an internal envelope suffix.
     rounds = iter(
         [
-            ([generate_families.Sequence("A_1_9/1_9", "AAAA")], {"A_1_9/1_9"}),
-            ([generate_families.Sequence("B_1_9/1_9", "BBBB")], {"B_1_9/1_9"}),
+            [generate_families.Sequence("A_1_9/1_9", "AAAA")],
+            [generate_families.Sequence("B_1_9/1_9", "BBBB")],
         ]
     )
     monkeypatch.setattr(generate_families, "filter_hits", lambda *_a, **_k: next(rounds))
