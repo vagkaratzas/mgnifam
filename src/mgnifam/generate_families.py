@@ -1130,9 +1130,7 @@ def parse_args(args: SequenceCollection[str] | None = None) -> argparse.Namespac
     parser.add_argument("-c", "--clusters_chunk", required=True)
     parser.add_argument("-f", "--fasta_file", required=True)
     parser.add_argument("-p", "--cpus", type=int, default=8)
-    # ponytail: `--chunk_num` is the pre-2.1 spelling of `--chunk_id`, kept as an alias
-    # so existing callers keep working. Drop it at 3.0.0.
-    parser.add_argument("-n", "--chunk_id", "--chunk_num", dest="chunk_id", default="1")
+    parser.add_argument("-n", "--chunk_id", default="1")
     parser.add_argument("--discard_min_rep_length", type=int, default=75)
     parser.add_argument("--discard_max_rep_length", type=int, default=2000)
     parser.add_argument("--discard_min_starting_membership", type=float, default=0.9)
