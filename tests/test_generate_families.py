@@ -598,7 +598,20 @@ def test_converged_discard_is_not_recorded(tmp_path: Path, monkeypatch: pytest.M
     assert writers.converged_families.getvalue() == "1\n"
 
 
-def test_csv_rows_round_trip_comma_and_quote_bearing_names(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("name", "protein", "region"),
+    [
+        ('protein"quote', 'protein"quote', "-"),
+        ("protein/v1", "protein/v1", "-"),
+        ('protein/v1,"variant', 'protein/v1,"variant', "-"),
+        ('protein/v1,"variant/101-104', 'protein/v1,"variant', "101-104"),
+        ("protein/v1/101-130", "protein/v1/101-130", "-"),
+        ("protein/v1/1_4", "protein/v1/1_4", "-"),
+    ],
+)
+def test_csv_rows_round_trip_comma_and_quote_bearing_names(
+    tmp_path: Path, name: str, protein: str, region: str
+) -> None:
     """Both per-chunk CSVs must survive the punctuation a FASTA name is allowed to carry.
 
     Neither column is drawn from the validated family-name alphabet: they hold whatever
@@ -606,7 +619,7 @@ def test_csv_rows_round_trip_comma_and_quote_bearing_names(tmp_path: Path) -> No
     in a three-column discard row, and a metadata protein whose embedded quote closed
     the field early -- `csv` then recovered a different identity with no error anywhere.
     """
-    store = FakeSequences({'protein"quote': "AAAA"})
+    store = FakeSequences({name: "AAAA"})
     for directory in gf.FAMILY_DIRECTORIES:
         (tmp_path / directory).mkdir()
     writers = gf.Writers(
@@ -628,11 +641,11 @@ def test_csv_rows_round_trip_comma_and_quote_bearing_names(tmp_path: Path) -> No
     assert gf.emit_family(discarded, 0, "chunk", writers) == 0
 
     successful = gf.Family(
-        'protein"quote',
-        ['protein"quote'],
+        name,
+        [name],
         state=gf.FamilyState.SUCCESSFUL,
-        seed_msa=text_msa(['protein"quote'], ["AAAA"], "xxxx").digitize(gf.ALPHABET),
-        full_msa=text_msa(['protein"quote'], ["AAAA"], "xxxx"),
+        seed_msa=text_msa([name], ["AAAA"], "xxxx").digitize(gf.ALPHABET),
+        full_msa=text_msa([name], ["AAAA"], "xxxx"),
         full_msa_num_seqs=1,
     )
     assert gf.emit_family(successful, 0, "chunk", writers) == 1
@@ -644,7 +657,11 @@ def test_csv_rows_round_trip_comma_and_quote_bearing_names(tmp_path: Path) -> No
         "value": "1",
     }
     (metadata_row,) = csv.DictReader(io.StringIO(writers.family_metadata.getvalue()))
-    assert metadata_row["protein"] == 'protein"quote'
+    assert metadata_row["protein"] == protein
+    assert metadata_row["region"] == region
+    assert metadata_row["length"] == "4"
+    assert metadata_row["sequence"] == "AAAA"
+    assert None not in metadata_row
     assert len(metadata_row) == len(gf.METADATA_HEADER.strip().split(","))
 
 

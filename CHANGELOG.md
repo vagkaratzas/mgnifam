@@ -76,8 +76,10 @@ resolution may change results.
   CSVs. A representative such as `protein,version` put a fourth field in a three-column
   `<chunk>_discarded.csv` row, and a protein such as `protein"quote` was written to
   `<chunk>_metadata.csv` as `"protein"quote"`, which any CSV reader recovers as a
-  different name. Both are now quoted and escaped properly. Rows whose names contain
-  neither character are byte-identical to before.
+  different name. Both are now quoted and escaped properly, including punctuation after
+  a literal slash. Metadata preserves the complete protein name and separates only a
+  coordinate range spanning the representative. Ordinary names without slashes, commas
+  or quotes retain their previous bytes.
 - A failed output write could leave a family in both the generated and discarded outputs,
   leave a partial plus a duplicate `<chunk>_discarded.csv` row, or leave its HMM and
   alignments on disk beside a discard row. A failed family's partial files are now removed;

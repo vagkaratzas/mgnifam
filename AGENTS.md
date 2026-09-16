@@ -88,6 +88,11 @@ accepts the trailing two fields as bounds only if they span the record exactly. 
 database of bare MGnifams integer accessions the two agree on every record — the span
 test holds for every real slice — so this changes no output for the reference data.
 
+Metadata uses that same span check on the emitted representative name. Never split at
+the first slash: `protein/v1,variant` is a whole protein, and sending its suffix into
+the unquoted region column corrupts the CSV. The protein field must retain and escape
+all literal punctuation. Guard: `test_csv_rows_round_trip_comma_and_quote_bearing_names`.
+
 ## Testing
 
 `generate_families` writes every generated artifact under `--output_dir` (default:

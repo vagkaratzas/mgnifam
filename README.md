@@ -295,6 +295,9 @@ Both CSVs carry a header row, so they load with `pandas.read_csv` as they are:
 
 `protein` is quoted, with embedded quotes doubled; a `protein` or `representative`
 containing a comma or a quote is escaped, so both files parse with a standard CSV reader.
+Literal slashes stay in `protein`, including punctuation after a slash: `protein/v1,variant`
+is one protein field. Only a trailing coordinate range spanning the emitted sequence is
+separated into `region`.
 `region` is `<start>-<end>` on the parent protein, or `-` when the
 representative spans a whole unsliced record. Those two columns together are the
 `<base>/<start>-<end>` spelling above, which is also how `<chunk>_reps.fasta` names its

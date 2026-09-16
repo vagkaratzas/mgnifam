@@ -2,12 +2,13 @@
 
 Reviewed 2026-09-10. The original review requested changes for two output-safety
 defects. Follow-up fixes are tracked below; findings describe the reviewed commit.
-Scope of follow-up: F1, F2, F5 and F6. F3 and F4 remain open for separate work.
+The initial follow-up covered F1, F2, F5 and F6. PR #9 addresses F3 and F4;
+its review and subsequent corrections are tracked in those sections below.
 
 **Follow-up complete:** F1, F2, F5 and F6 are done, each in a separate local commit.
 Final verification: locked environment checks passed, **83 tests passed**, all
 pre-commit hooks passed, and all 14 library models matched fresh generation.
-No push was performed. F3/F4 and the shared scientific implementation are unchanged.
+No push was performed during that initial follow-up.
 
 ## Scope and evidence
 
@@ -124,6 +125,11 @@ protein keeps its always-quoted convention with embedded quotes doubled. Names f
 characters are byte-identical to before. A regression test round-trips a comma-bearing
 representative and a quote-bearing protein through `csv.DictReader`, asserting column count
 and exact recovered identity. Full suite and all pre-commit hooks passed.
+
+PR #9 review found that splitting metadata at the first slash still moved literal
+name suffixes into the unquoted region column. Metadata now applies the slice-span
+check to the emitted name. Regressions cover literal slashes, commas and quotes after
+slashes, true coordinate ranges, and numeric-looking suffixes that are not regions.
 
 **Pre-existing; shared by both commands where applicable.** Locations:
 [`generate_families.py:933–935`](src/mgnifam/generate_families.py#L933) and

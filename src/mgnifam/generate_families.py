@@ -1103,7 +1103,13 @@ def emit_family(
             if row_number == 0:
                 # Row 0 is the representative: the top hit's highest-scoring domain leads.
                 residues = re.sub(r"[.\-~]", "", row).upper()
-                protein, _, region = sequence_name.partition("/")
+                # Literal slashes belong to the protein. Only a suffix spanning this
+                # emitted row is a coordinate range; use the same rule as FASTA input.
+                bounds = split_slice_name(sequence_name, len(residues))
+                protein, region = sequence_name, "-"
+                if bounds is not None:
+                    protein, start = bounds
+                    region = f"{start}-{start + len(residues) - 1}"
                 # The column is quoted unconditionally, which already survives a comma; an
                 # embedded quote still has to be doubled or it closes the field early and
                 # `csv` silently hands back a different identity. Kept as an f-string rather
@@ -1112,7 +1118,7 @@ def emit_family(
                 quoted_protein = protein.replace('"', '""')
                 writers.family_metadata.write(
                     f'{family_id},{family.full_msa_num_seqs},"{quoted_protein}",'
-                    f"{region or '-'},{len(residues)},{residues},{final_hmm.consensus},"
+                    f"{region},{len(residues)},{residues},{final_hmm.consensus},"
                     f"{family.ever_converged}\n"
                 )
                 # `family_name`, not a second `f"{chunk}_{id}"`: with a preserved name and
