@@ -89,6 +89,13 @@ resolution may change results.
   lowering peak memory at large `--batch_size` and letting a run recover from one oversized
   family's `MemoryError`.
 
+### Dependencies
+
+| Tool    | Previous version | New version |
+| ------- | ---------------- | ----------- |
+| numpy   | 2.5.1            | 2.5.3       |
+| pyhmmer | 0.12.1           | 0.12.3      |
+
 ## [2.0.0] - 2026/07/29
 
 A major version because two documented behaviours change: the two per-chunk CSVs gain a
