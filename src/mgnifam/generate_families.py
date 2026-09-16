@@ -46,6 +46,7 @@ import threading
 import time
 from collections.abc import Generator, Iterable, Iterator, Mapping
 from collections.abc import Sequence as SequenceCollection
+from collections.abc import Set as SetCollection
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -399,24 +400,34 @@ def filter_hits(
     exit_flag: bool,
     recruit_hit_length_percentage: float,
     indexed_sequences: IndexedSequences,
-) -> list[Sequence]:
+) -> tuple[list[Sequence], set[str]]:
     """Resolve hit records to sequences, keeping those whose envelope is long enough.
 
     Sequences whose envelope covers only part of the target are masked down to it, and
     renamed `<name>/<env_from>_<env_to>`.
 
+    Returns those sequences and the names among them that were masked. The set is the
+    point: `<name>/<env_from>_<env_to>` is a shape a database name is free to have, so
+    once the name is all that survives -- which is all an MSA row carries -- a masked
+    `X` is indistinguishable from an unmasked record called `X/<from>_<to>`, and a
+    database holding both is not a contrived one. This is the only place that knows
+    which of the two a row is, so it says so rather than leaving it to be guessed from
+    the string downstream.
+
     `exit_flag` waives the length requirement. The exit branch calls this a second time
     over the same records, which is why the records are cached rather than re-searched.
     """
     filtered_sequences = []
+    masked_names = set()
     for name, target_length, env_from, env_to in records:
         envelope_length = env_to - env_from + 1
         if exit_flag or envelope_length >= recruit_hit_length_percentage * qlen:
             sequence = cast(Sequence, indexed_sequences.get(name))
             if envelope_length < target_length:
                 sequence = mask_sequence(sequence, env_from, env_to)
+                masked_names.add(sequence.id)
             filtered_sequences.append(sequence)
-    return filtered_sequences
+    return filtered_sequences, masked_names
 
 
 def run_hmmalign(
@@ -523,26 +534,26 @@ def clip_ends(msa: pyhmmer.easel.TextMSA, occupancy_threshold: float) -> pyhmmer
     return msa.select(columns=range(start_position, end_position + 1))
 
 
-def strip_envelope(sequence_name: str) -> str:
-    """Return `sequence_name` without the `/<env_from>_<env_to>` suffix `mask_sequence` adds.
+def strip_envelope(sequence_name: str, masked_names: SetCollection[str]) -> str:
+    """Return the database record `sequence_name` came from.
 
-    Splitting at the *first* slash instead, as this did, silently truncated every database
-    name that contains one: two distinct records `X/v1` and `X/v2` both collapsed to `X`,
-    so the membership and convergence sets counted one protein where there were two.
-
-    ponytail: shape only, no index lookup. A record genuinely named `X/356_472` is
-    indistinguishable here from record `X` clipped to 356..472, and is read as the latter
-    -- which costs that one name a membership match, nothing more. `parse_protein_name`
-    resolves the same ambiguity against the index because there a wrong reading is a
-    crash or a wrong identity in the output; doing it here would mean fetching every
-    recruited sequence again on every round, which is the one cost this module refuses.
+    A name is stripped only if `filter_hits` reports having masked it. Deciding from the
+    string instead is wrong twice over: splitting at the *first* slash, as this did,
+    truncated every database name containing one, collapsing distinct records `X/v1` and
+    `X/v2` into one protein in the membership and convergence sets; and matching the
+    suffix shape at the end still cannot tell a masked `X` from a record named
+    `X/<from>_<to>`, which a database may legitimately contain alongside `X`.
     """
+    if sequence_name not in masked_names:
+        return sequence_name
     match = ENVELOPE_SUFFIX.fullmatch(sequence_name)
     return match.group(1) if match else sequence_name
 
 
-def unmask_sequence_names(sequences: Iterable[Sequence]) -> list[str]:
-    return [strip_envelope(name) for name, _ in sequences]
+def unmask_sequence_names(
+    sequences: Iterable[Sequence], masked_names: SetCollection[str]
+) -> list[str]:
+    return [strip_envelope(name, masked_names) for name, _ in sequences]
 
 
 def check_seed_membership(
@@ -550,12 +561,14 @@ def check_seed_membership(
 ) -> float:
     """Return the fraction of the cluster's distinct proteins still recruited.
 
-    Both sides are counted after `strip_envelope` and as sets, so the ratio cannot
-    exceed 1. Dividing by the raw row count instead would let a cluster TSV that repeats
-    a member report less than full membership for a family that kept every one of them.
+    Both sides are counted as sets, so the ratio cannot exceed 1. Dividing by the raw row
+    count instead would let a cluster TSV that repeats a member report less than full
+    membership for a family that kept every one of them. Callers pass names already
+    reduced to their database records by `unmask_sequence_names`; cluster members arrive
+    unmasked and need no reduction.
     """
-    original_records = set(map(strip_envelope, original_sequence_names))
-    filtered_records = set(map(strip_envelope, filtered_sequence_names))
+    original_records = set(original_sequence_names)
+    filtered_records = set(filtered_sequence_names)
     return len(original_records & filtered_records) / len(original_records)
 
 
@@ -597,7 +610,12 @@ def split_slice_name(record_name: str, record_length: int) -> tuple[str, int] | 
     return protein, int(start)
 
 
-def parse_protein_name(row_name: str, aligned_row: str, indexed_sequences: IndexedSequences) -> str:
+def parse_protein_name(
+    row_name: str,
+    aligned_row: str,
+    indexed_sequences: IndexedSequences,
+    masked_names: SetCollection[str],
+) -> str:
     """Rename one alignment row to `<protein>/<start>-<end>` on the parent protein.
 
     Database records are themselves slices of a protein, named `<protein>_<start>_<end>`
@@ -612,31 +630,22 @@ def parse_protein_name(row_name: str, aligned_row: str, indexed_sequences: Index
     legacy script did -- returns the first match, so two identical repeat domains of one
     protein resolved to the same name and one of them was dropped as a duplicate.
 
-    The envelope is taken off the end, not at the first slash, and confirmed against the
-    index. Shape cannot settle it alone: a record genuinely named `X/356_472` reads the
-    same as record `X` clipped to 356..472, and only the index knows which of the two
-    exists. Splitting at the first slash instead fetched a truncated name and raised
-    `KeyError`, which `family_guard` recorded as an internal-error discard -- so an
-    ordinary database identifier failed the run after every search had already been paid
-    for, and was reported as a crash rather than as its input.
+    A row is read as masked only if `masked_names` says `filter_hits` masked it, never
+    because its name looks masked: `X/356_472` is both what masking `X` produces and a
+    name a database may hold in its own right, alongside `X`. Splitting at the first
+    slash, as this did, fetched a truncated name and raised `KeyError`, which
+    `family_guard` recorded as an internal-error discard -- so an ordinary database
+    identifier failed the run after every search had been paid for, and was reported as
+    a crash rather than as its input.
     """
-    envelope_match = ENVELOPE_SUFFIX.fullmatch(row_name)
-    record_name = row_name
-    env_bounds: tuple[int, int] | None = None
-    fetched: Sequence | None = None
-    if envelope_match is not None:
-        # The stripped reading is tried first and its record kept, so the masked rows --
-        # which are most of them -- still cost exactly one fetch.
-        fetched = indexed_sequences.get(envelope_match.group(1), missing_ok=True)
-        if fetched is not None:
-            record_name = envelope_match.group(1)
-            env_bounds = (int(envelope_match.group(2)), int(envelope_match.group(3)))
-    if fetched is None:
-        fetched = cast(Sequence, indexed_sequences.get(row_name))
-
-    record = fetched.seq
+    envelope_match = ENVELOPE_SUFFIX.fullmatch(row_name) if row_name in masked_names else None
+    record_name = envelope_match.group(1) if envelope_match else row_name
+    record = cast(Sequence, indexed_sequences.get(record_name)).seq
     residues = re.sub(r"[.\-~]", "", aligned_row).upper()
-    env_from, env_to = env_bounds if env_bounds is not None else (1, len(record))
+    if envelope_match:
+        env_from, env_to = int(envelope_match.group(2)), int(envelope_match.group(3))
+    else:
+        env_from, env_to = 1, len(record)
     offset = record.find(residues, env_from - 1, env_to)
     if offset < 0:
         raise ValueError(f"{row_name}: aligned residues are not in its envelope of {record_name}")
@@ -656,7 +665,10 @@ def parse_protein_name(row_name: str, aligned_row: str, indexed_sequences: Index
 
 
 def renumber_msa(
-    msa: pyhmmer.easel.TextMSA, family_name: str, indexed_sequences: IndexedSequences
+    msa: pyhmmer.easel.TextMSA,
+    family_name: str,
+    indexed_sequences: IndexedSequences,
+    masked_names: SetCollection[str],
 ) -> pyhmmer.easel.TextMSA:
     """Return a copy of `msa` whose rows are named in parent-protein coordinates.
 
@@ -669,7 +681,7 @@ def renumber_msa(
         name=family_name.encode(),
         sequences=[
             pyhmmer.easel.TextSequence(
-                name=parse_protein_name(name, row, indexed_sequences), sequence=row
+                name=parse_protein_name(name, row, indexed_sequences, masked_names), sequence=row
             )
             for name, row in zip(msa.names, msa.alignment, strict=True)
         ],
@@ -695,6 +707,12 @@ class Family:
     records: list[Record] = field(default_factory=list)
     qlen: int = 0
     total_checked_sequences: set[str] = field(default_factory=set)
+    # Row names `filter_hits` produced by masking, accumulated across rounds because the
+    # seed and full MSAs held at emission come from different rounds. Without it a row
+    # name is ambiguous against a database that contains both `X` and `X/<from>_<to>`.
+    # Strings only, so it is the same order of memory as `total_checked_sequences` and
+    # not what `discard` exists to release.
+    masked_names: set[str] = field(default_factory=set)
     full_msa: pyhmmer.easel.TextMSA | None = None
     full_msa_num_seqs: int = 0
     discard_reason: str = ""
@@ -720,6 +738,10 @@ class Family:
         self.hmm = None
         self.records = []
         self.total_checked_sequences = set()
+        # A discarded family returns from `emit_family` before `renumber_msa`, so nothing
+        # reads this again. Released with the rest for the same reason they are: it is
+        # per-recruit state and the batch holds every family until the batch ends.
+        self.masked_names = set()
 
     def initialise(self, indexed_sequences: IndexedSequences, cpus: int) -> None:
         """Build the first seed MSA from the cluster's own members.
@@ -755,13 +777,14 @@ class Family:
           ahead of its own model, so the exported HMM described an alignment that was
           never searched with, while the full MSA beside it came from the older model.
         """
-        filtered_sequences = filter_hits(
+        filtered_sequences, masked_names = filter_hits(
             self.records,
             self.qlen,
             False,
             options.recruit_hit_length_percentage,
             indexed_sequences,
         )
+        self.masked_names |= masked_names
         if not filtered_sequences:
             self.discard("low complexity model - confounding cluster", 0.0)
             return
@@ -771,10 +794,10 @@ class Family:
             # reaches adopts. A later round must be scored against round 1's recruitment,
             # not against its own -- otherwise the membership check compares a model to
             # itself and can never fail.
-            self.members = unmask_sequence_names(filtered_sequences)
+            self.members = unmask_sequence_names(filtered_sequences, masked_names)
             self.adopt_recruits_as_members = False
 
-        recruited_names = set(unmask_sequence_names(filtered_sequences))
+        recruited_names = set(unmask_sequence_names(filtered_sequences, masked_names))
         new_recruited_sequences = recruited_names - self.total_checked_sequences
         self.total_checked_sequences.update(new_recruited_sequences)
         if not new_recruited_sequences:
@@ -813,18 +836,21 @@ class Family:
         if self.state not in (FamilyState.RUNNING, FamilyState.CONVERGED):
             return
 
-        filtered_sequences = filter_hits(
+        filtered_sequences, masked_names = filter_hits(
             self.records,
             self.qlen,
             True,
             options.recruit_hit_length_percentage,
             indexed_sequences,
         )
+        self.masked_names |= masked_names
         if not filtered_sequences:
             self.discard("low complexity model - confounding cluster", 0.0)
             return
 
-        membership = check_seed_membership(self.members, unmask_sequence_names(filtered_sequences))
+        membership = check_seed_membership(
+            self.members, unmask_sequence_names(filtered_sequences, masked_names)
+        )
         self.membership = membership
         if membership < options.discard_min_starting_membership:
             self.discard("few seed sequences remained", membership)
@@ -1016,8 +1042,10 @@ def emit_family(
     if seed_msa is not None:
         if seed_msa.reference is None:
             raise ValueError("successful seed MSA has no RF reference annotation")
-        renumbered_seed = renumber_msa(seed_msa.textize(), family_name, indexed)
-    renumbered_full = renumber_msa(full_msa, family_name, indexed)
+        renumbered_seed = renumber_msa(
+            seed_msa.textize(), family_name, indexed, family.masked_names
+        )
+    renumbered_full = renumber_msa(full_msa, family_name, indexed, family.masked_names)
     # Checked here rather than left to the row loop's `zip(strict=True)`: that loop runs
     # after the shared handles have been appended to, so a raise there would put this
     # representative in `successful` and then, through the re-emit, in `discarded` too.

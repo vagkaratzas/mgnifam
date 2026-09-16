@@ -65,7 +65,13 @@ resolution may change results.
   had already been paid for. Two records sharing a prefix, such as `X/v1` and `X/v2`, also
   collapsed into one another in the membership and convergence sets, so a family could
   report full membership on half its proteins. Slashes are now identity: only a trailing
-  `/<start>-<end>` that spans the record is read as coordinates.
+  `/<start>-<end>` that spans the record is read as coordinates, and no sequence name is
+  reserved — a database may hold `3387826881` and `3387826881/356_472` as two unrelated
+  proteins. A record named `3387826881/356-472` *is* read as a region of `3387826881`
+  when its length matches those bounds, which is the round trip above, not a collision.
+  Which rows were clipped to a hit envelope is now carried alongside them from
+  the point they are clipped, rather than inferred afterwards from the name, so the two
+  cannot be confused for one another.
 - Sequence names carrying a comma or a double quote no longer corrupt the two per-chunk
   CSVs. A representative such as `protein,version` put a fourth field in a three-column
   `<chunk>_discarded.csv` row, and a protein such as `protein"quote` was written to

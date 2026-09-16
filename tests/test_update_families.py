@@ -612,10 +612,12 @@ def test_round_one_recruits_are_adopted_as_members_exactly_once(
     itself and the membership check could never fail -- which is the whole point of it.
     `advance` clears the flag in the same block that reads it.
     """
+    # Each round returns one masked recruit, reported the way `filter_hits` reports it:
+    # the sequences plus the names it masked.
     rounds = iter(
         [
-            [generate_families.Sequence("A_1_9/1_9", "AAAA")],
-            [generate_families.Sequence("B_1_9/1_9", "BBBB")],
+            ([generate_families.Sequence("A_1_9/1_9", "AAAA")], {"A_1_9/1_9"}),
+            ([generate_families.Sequence("B_1_9/1_9", "BBBB")], {"B_1_9/1_9"}),
         ]
     )
     monkeypatch.setattr(generate_families, "filter_hits", lambda *_a, **_k: next(rounds))

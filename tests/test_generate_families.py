@@ -287,7 +287,9 @@ def test_soft_masked_fasta_is_normalised_at_the_fetch_boundary(tmp_path: Path) -
         sequences = gf.IndexedSequences(handle)
         assert sequences.get("prot_101_117") == gf.Sequence("prot_101_117", "MKTAYLAAGIVGQQQQQ")
         # The alignment row is upper case with an insert column; it must still resolve.
-        assert gf.parse_protein_name("prot_101_117", "MKTAY-laa", sequences) == "prot/101-108"
+        assert (
+            gf.parse_protein_name("prot_101_117", "MKTAY-laa", sequences, set()) == "prot/101-108"
+        )
 
 
 def text_msa(names: list[str], sequences: list[str], reference: str) -> pyhmmer.easel.TextMSA:
@@ -332,22 +334,25 @@ def test_parse_protein_name_resolves_repeats_within_their_envelope() -> None:
     # reads a name as a slice when its bounds span the record exactly.
     store = FakeSequences({"prot_101_130": f"{repeat}QQQQQ{repeat}QQQQQ"})
 
-    first = gf.parse_protein_name("prot_101_130/1_10", repeat, store)
-    second = gf.parse_protein_name("prot_101_130/16_25", repeat, store)
+    first = gf.parse_protein_name("prot_101_130/1_10", repeat, store, {"prot_101_130/1_10"})
+    second = gf.parse_protein_name("prot_101_130/16_25", repeat, store, {"prot_101_130/16_25"})
 
     assert (first, second) == ("prot/101-110", "prot/116-125")
 
     # Gap characters are stripped, and a row shorter than its record still gets coordinates
     # -- legacy truncated this name to the bare accession to fit the old name column.
-    assert gf.parse_protein_name("prot_101_130", f"-{repeat[1:]}...QQQQQ", store) == "prot/102-115"
+    assert (
+        gf.parse_protein_name("prot_101_130", f"-{repeat[1:]}...QQQQQ", store, set())
+        == "prot/102-115"
+    )
 
     # A row spanning the whole of an unsliced record keeps the bare accession, which
     # `family_metadata` records as region "-".
     whole = FakeSequences({"prot": repeat})
-    assert gf.parse_protein_name("prot", repeat, whole) == "prot"
+    assert gf.parse_protein_name("prot", repeat, whole, set()) == "prot"
 
     with pytest.raises(ValueError, match="not in its envelope"):
-        gf.parse_protein_name("prot_101_130/1_10", "WWWWWWWWWW", store)
+        gf.parse_protein_name("prot_101_130/1_10", "WWWWWWWWWW", store, {"prot_101_130/1_10"})
 
 
 def test_underscores_in_protein_names_are_not_mistaken_for_slice_bounds() -> None:
@@ -362,24 +367,32 @@ def test_underscores_in_protein_names_are_not_mistaken_for_slice_bounds() -> Non
     # field, renaming every row of the family to `contig`.
     sliced = FakeSequences({"contig_1_gene_2_88_117": f"{repeat}QQQQQ{repeat}QQQQQ"})
     assert (
-        gf.parse_protein_name("contig_1_gene_2_88_117/16_25", repeat, sliced)
+        gf.parse_protein_name(
+            "contig_1_gene_2_88_117/16_25", repeat, sliced, {"contig_1_gene_2_88_117/16_25"}
+        )
         == "contig_1_gene_2/103-112"
     )
 
     # Non-numeric trailing fields are not bounds. This reached `int()` and raised, and
     # `family_guard` recorded the whole family as an internal-error discard.
     named = FakeSequences({"contig_1_gene_x": f"{repeat}QQQQQ"})
-    assert gf.parse_protein_name("contig_1_gene_x", repeat, named) == "contig_1_gene_x/1-10"
-    assert gf.parse_protein_name("contig_1_gene_x", f"{repeat}QQQQQ", named) == "contig_1_gene_x"
+    assert gf.parse_protein_name("contig_1_gene_x", repeat, named, set()) == "contig_1_gene_x/1-10"
+    assert (
+        gf.parse_protein_name("contig_1_gene_x", f"{repeat}QQQQQ", named, set())
+        == "contig_1_gene_x"
+    )
 
     # Numeric trailing fields that do not span the record are part of the name, not bounds.
     # 34 - 12 + 1 is 23; the record is 15 residues, so `scaffold_12_34` is a whole protein.
     coincidental = FakeSequences({"scaffold_12_34": f"{repeat}QQQQQ"})
-    assert gf.parse_protein_name("scaffold_12_34", repeat, coincidental) == "scaffold_12_34/1-10"
+    assert (
+        gf.parse_protein_name("scaffold_12_34", repeat, coincidental, set())
+        == "scaffold_12_34/1-10"
+    )
 
     # The span test is the whole disambiguator: same name, and now the bounds do fit.
     real_slice = FakeSequences({"scaffold_12_34": f"{repeat}{repeat}QQQ"})
-    assert gf.parse_protein_name("scaffold_12_34", repeat, real_slice) == "scaffold/12-21"
+    assert gf.parse_protein_name("scaffold_12_34", repeat, real_slice, set()) == "scaffold/12-21"
 
 
 def test_slash_bearing_names_keep_their_identity_and_round_trip_their_coordinates() -> None:
@@ -401,19 +414,31 @@ def test_slash_bearing_names_keep_their_identity_and_round_trip_their_coordinate
     underscore = FakeSequences({"3387826881_101_130": record})
     slashed = FakeSequences({"3387826881/101-130": record})
     assert (
-        gf.parse_protein_name("3387826881_101_130/1_10", repeat, underscore) == "3387826881/101-110"
+        gf.parse_protein_name(
+            "3387826881_101_130/1_10", repeat, underscore, {"3387826881_101_130/1_10"}
+        )
+        == "3387826881/101-110"
     )
-    assert gf.parse_protein_name("3387826881/101-130/1_10", repeat, slashed) == "3387826881/101-110"
+    assert (
+        gf.parse_protein_name(
+            "3387826881/101-130/1_10", repeat, slashed, {"3387826881/101-130/1_10"}
+        )
+        == "3387826881/101-110"
+    )
 
     # Output is a valid input: renaming the record to what the line above produced and
     # re-running gives that same name back.
     fed_back = FakeSequences({"3387826881/101-110": repeat})
-    assert gf.parse_protein_name("3387826881/101-110", repeat, fed_back) == "3387826881/101-110"
+    assert (
+        gf.parse_protein_name("3387826881/101-110", repeat, fed_back, set()) == "3387826881/101-110"
+    )
 
     # The base keeps every slash it came with, so a version segment survives.
     versioned = FakeSequences({"3387826881/v1/101-130": record})
     assert (
-        gf.parse_protein_name("3387826881/v1/101-130/16_25", repeat, versioned)
+        gf.parse_protein_name(
+            "3387826881/v1/101-130/16_25", repeat, versioned, {"3387826881/v1/101-130/16_25"}
+        )
         == "3387826881/v1/116-125"
     )
 
@@ -421,13 +446,24 @@ def test_slash_bearing_names_keep_their_identity_and_round_trip_their_coordinate
     # these raised `KeyError` on the truncated prefix before.
     for name in ("3387826881/101_130", "3387826881/101", "3387826881/v1", "3387826881/101-130-243"):
         store = FakeSequences({name: repeat})
-        assert gf.parse_protein_name(name, repeat, store) == name
-        assert gf.parse_protein_name(name, repeat[:5], store) == f"{name}/1-5"
+        assert gf.parse_protein_name(name, repeat, store, set()) == name
+        assert gf.parse_protein_name(name, repeat[:5], store, set()) == f"{name}/1-5"
 
     # Two records sharing a prefix are two proteins, not one.
-    assert gf.strip_envelope("3387826881/v1") == "3387826881/v1"
-    assert gf.strip_envelope("3387826881/v1/5_20") == "3387826881/v1"
+    assert gf.strip_envelope("3387826881/v1", set()) == "3387826881/v1"
+    assert gf.strip_envelope("3387826881/v1/5_20", {"3387826881/v1/5_20"}) == "3387826881/v1"
     assert gf.check_seed_membership(["3387826881/v1", "3387826881/v2"], ["3387826881/v1"]) == 0.5
+
+    # A record may be named exactly what masking another record would produce. Only the
+    # masking `filter_hits` actually did decides, so both survive in the same database.
+    collide = FakeSequences({"3387826881": repeat * 2, "3387826881/1_10": repeat})
+    assert gf.parse_protein_name("3387826881/1_10", repeat, collide, set()) == "3387826881/1_10"
+    assert (
+        gf.parse_protein_name("3387826881/1_10", repeat, collide, {"3387826881/1_10"})
+        == "3387826881/1-10"
+    )
+    assert gf.strip_envelope("3387826881/1_10", set()) == "3387826881/1_10"
+    assert gf.strip_envelope("3387826881/1_10", {"3387826881/1_10"}) == "3387826881"
 
 
 def test_seed_membership_counts_distinct_proteins_on_both_sides() -> None:
@@ -440,8 +476,11 @@ def test_seed_membership_counts_distinct_proteins_on_both_sides() -> None:
     assert gf.check_seed_membership(["a", "b", "c"], ["a", "b", "c"]) == 1.0
     assert gf.check_seed_membership(["a", "a", "b", "c"], ["a", "b", "c"]) == 1.0
 
-    # Envelope suffixes collapse to the parent protein on both sides.
-    assert gf.check_seed_membership(["p/1_9", "p/20_30"], ["p/1_9"]) == 1.0
+    # Callers reduce masked rows to their records first; two envelopes of one protein
+    # are one protein on the recruited side.
+    masked = ["p/1_9", "p/20_30"]
+    recruited = gf.unmask_sequence_names([gf.Sequence(name, "") for name in masked], set(masked))
+    assert gf.check_seed_membership(["p"], recruited) == 1.0
 
     # Genuine loss still measures as loss.
     assert gf.check_seed_membership(["a", "b", "c", "d"], ["a", "b"]) == 0.5
@@ -450,10 +489,12 @@ def test_seed_membership_counts_distinct_proteins_on_both_sides() -> None:
 def test_filter_hits_exit_filter_and_native_order() -> None:
     records = [("b", 10, 2, 4), ("a", 10, 1, 10), ("b", 10, 5, 10)]
     store = FakeSequences({"a": "A" * 10, "b": "B" * 10})
-    regular = gf.filter_hits(records, 10, False, 0.9, store)
-    exiting = gf.filter_hits(records, 10, True, 0.9, store)
+    regular, regular_masked = gf.filter_hits(records, 10, False, 0.9, store)
+    exiting, exiting_masked = gf.filter_hits(records, 10, True, 0.9, store)
     assert [sequence.id for sequence in regular] == ["a"]
     assert [sequence.id for sequence in exiting] == ["b/2_4", "a", "b/5_10"]
+    # `a` spans its whole target, so it is reported unmasked and keeps its name intact.
+    assert (regular_masked, exiting_masked) == (set(), {"b/2_4", "b/5_10"})
 
 
 def family_options(**changes: object) -> argparse.Namespace:
@@ -789,7 +830,7 @@ def test_mismatched_full_msa_is_rejected_before_the_shared_appends(tmp_path: Pat
 
     monkeypatch = pytest.MonkeyPatch()
     with monkeypatch.context() as patched:
-        patched.setattr(gf, "renumber_msa", lambda msa, name, indexed: Mismatched(msa))
+        patched.setattr(gf, "renumber_msa", lambda msa, name, indexed, masked: Mismatched(msa))
         with pytest.raises(ValueError, match="mismatched names and rows"):
             gf.emit_family(family, 0, "chunk", writers)
 
@@ -948,14 +989,14 @@ def test_one_failing_family_is_discarded_and_the_chunk_survives(
     original = gf.renumber_msa
     failed_once = False
 
-    def explode(msa, family_name, indexed):  # type: ignore[no-untyped-def]
+    def explode(msa, family_name, indexed, masked):  # type: ignore[no-untyped-def]
         # Keyed on the first call, not on the name: a failed family releases its id, so
         # the next family to succeed is renamed into it and a name-keyed trap cascades.
         nonlocal failed_once
         if not failed_once:
             failed_once = True
             raise RuntimeError("synthetic failure, comma included")
-        return original(msa, family_name, indexed)
+        return original(msa, family_name, indexed, masked)
 
     monkeypatch.setattr(gf, "renumber_msa", explode)
     guarded = tmp_path / "guarded"
@@ -1015,12 +1056,12 @@ def test_console_script_returns_three_after_a_contained_family_crash(
         "from mgnifam import generate_families as gf\n"
         "original = gf.renumber_msa\n"
         "failed = False\n"
-        "def explode(msa, family_name, indexed):\n"
+        "def explode(msa, family_name, indexed, masked):\n"
         "    global failed\n"
         "    if not failed:\n"
         "        failed = True\n"
         "        raise RuntimeError('subprocess synthetic failure')\n"
-        "    return original(msa, family_name, indexed)\n"
+        "    return original(msa, family_name, indexed, masked)\n"
         "gf.renumber_msa = explode\n"
     )
     run_directory = tmp_path / "console-crash"
@@ -1222,14 +1263,14 @@ def test_unreported_hit_is_not_recruited_and_prefetch_matches(
     ):
         # exit_flag=True waives the envelope-length filter, so nothing but the reporting
         # threshold can be keeping 6320430079 out.
-        recruited = gf.filter_hits(
+        recruited, recruited_masked = gf.filter_hits(
             gf.extract_records(streaming),
             streaming.query.M,
             True,
             0.9,
             gf.IndexedSequences(indexed_file),
         )
-    assert "6320430079" not in gf.unmask_sequence_names(recruited)
+    assert "6320430079" not in gf.unmask_sequence_names(recruited, recruited_masked)
 
 
 def test_extract_records_puts_top_scoring_domain_first() -> None:

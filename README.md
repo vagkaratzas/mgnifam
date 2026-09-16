@@ -107,6 +107,21 @@ names, none of them carrying a region.
 Any other character is allowed in a name, including further slashes. Names are never
 split on their first slash, so two records sharing a prefix stay distinct.
 
+No name is *reserved*, but the slice spelling is not inert either. Whether a record is
+independent of `3387826881` depends on which spelling it uses and on its own length:
+
+| record, alongside `3387826881` | length | read as |
+|---|---|---|
+| `3387826881/356_472` | any | an unrelated protein — underscore is not the slice separator |
+| `3387826881/356-472` | 117 | region 356–472 **of** `3387826881`, by its own declaration |
+| `3387826881/356-472` | anything else | an unrelated protein — the bounds do not span it |
+
+The middle row is the round-trip working as intended: a record that says it is a region
+of `3387826881` is reported at those parent coordinates, exactly as the corresponding
+residues of `3387826881` itself would be. If a database contains both, the same residues
+are the same protein region and get the same name — they are not two things. Include the
+parent and its own slices in one database only if that is what you mean.
+
 ### Optional flags
 
 Pass every threshold explicitly on a production run. The defaults exist for ad-hoc use;

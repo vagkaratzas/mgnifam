@@ -373,7 +373,7 @@ def recruit_only(
     happen. `finish` is then reused unchanged: it re-filters the cached records with the
     envelope requirement waived, exactly as it does for a converged family.
     """
-    filtered_sequences = filter_hits(
+    filtered_sequences, masked_names = filter_hits(
         family.records,
         family.qlen,
         False,
@@ -383,7 +383,8 @@ def recruit_only(
     if not filtered_sequences:
         family.discard("low complexity model - confounding cluster", 0.0)
         return
-    family.members = unmask_sequence_names(filtered_sequences)
+    family.masked_names |= masked_names
+    family.members = unmask_sequence_names(filtered_sequences, masked_names)
     delta.round1_recruits = len(filtered_sequences)
 
 
