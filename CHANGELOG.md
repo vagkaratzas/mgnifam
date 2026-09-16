@@ -7,13 +7,100 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 *Reproducibility*
 
-Repeated runs are byte-identical: same inputs, same lockfile, same outputs —
-regardless of `--cpus`, `--batch_size`, `--prefetch_targets` or `PYTHONHASHSEED`.
+Repeated runs are byte-identical — same inputs, same outputs — regardless of `--cpus`,
+`--batch_size`, `--prefetch_targets` or `PYTHONHASHSEED`. The guarantee holds for the
+dependency versions pinned in `uv.lock` (`uv sync --frozen`). Installing from PyPI resolves
+pyhmmer, pyfamsa and pytrimal within their declared ranges instead, and a different
+resolution may change results.
 
-That guarantee is scoped to the dependency set resolved in the committed `uv.lock`
-(`uv sync --frozen`). pyhmmer, pyfamsa and pytrimal decide hit retention, alignment
-and serialised bytes, so installing from PyPI — which resolves within the declared
-version ranges instead — may produce different results on a different resolution.
+## [3.0.0] - 2026/09/16
+
+A major version because three documented behaviours change: `--chunk_num` is removed in
+favour of `--chunk_id`, a chunk with internal family failures exits `3` instead of `0`, and
+the representative is chosen differently, which changes output for some families. All three
+are listed under *Changed* below.
+
+### Added
+
+- **`mgnifam update_families`** refreshes existing family HMMs against a new database by
+  searching the stored models, so each family keeps its name across releases.
+  - `--hmm_input` takes a directory of `.hmm`/`.hmm.gz` files or one multi-model library
+    `.hmm.lib.gz`; both give identical output.
+  - `--skip_refine` recruits once and aligns, leaving model, seed MSA and RF line unchanged.
+    Without it, the full three-round refine loop runs.
+  - Family names come from each model's `NAME` field, so `family_id` in
+    `<chunk>_updated_metadata.csv` holds a name like `1_7`, not a rank. Chunks sharing an
+    output directory must own disjoint family names.
+  - `<chunk>_updated_delta.csv` reports, per family, model length before and after, round-1
+    recruits, final size, retention, rounds run and outcome.
+  - Use a separate `--output_dir` per run. Retrying the same models in place is allowed and
+    clears that run's previous artifacts first; running a smaller model set over a directory
+    holding a larger one is refused. Inputs that overlap an output path, including through
+    symlinks or hard links, are refused before anything is written.
+- A database record that is a slice of a larger protein may now be named
+  `<base>/<start>-<end>` as well as `<protein>_<start>_<end>`. The new spelling is the one
+  this tool emits, so `<chunk>_reps.fasta` from one release can be used directly as the
+  database for the next and keeps its coordinates instead of every record being read as a
+  whole protein. The base retains its slashes: `3387826881/v1/356-472` is region 356–472
+  of the protein `3387826881/v1`. Both spellings are read identically and the existing one
+  is unchanged, so no database or fixture needs regenerating. As before, bounds count as
+  coordinates only if they span the record exactly. See *Sequence names* in the README.
+
+### Changed
+
+- **Breaking:** `generate_families -n, --chunk_num` is renamed `-n, --chunk_id`, since the
+  value is any string matching `[A-Za-z0-9._-]+`. `--chunk_num` is no longer accepted:
+  replace it with `--chunk_id` or `-n`. The new `update_families` takes the same
+  `-n, --chunk_id`.
+- **Breaking:** a chunk in which one or more families failed with an internal error now
+  exits `3` instead of `0`. The chunk still finishes and its output is complete and
+  consistent; the failed clusters are listed in `<chunk>_discarded.csv`, and the final
+  `DONE.` log line reports how many there were. Re-run the chunk or accept the loss. See
+  *Exit status* in the README.
+- **Breaking:** the representative is now the highest-scoring domain of the top hit, not
+  its leftmost domain. Previously a short leading fragment could become the representative,
+  giving wrong metadata or discarding a healthy family. Output changes for families whose
+  top hit has several domains, and diverges from `reference/legacy_generate_families.py`.
+
+### Fixed
+
+- A slash in a database sequence name is no longer treated as a separator. Names were
+  split at their first slash, so any identifier containing one was truncated to a name the
+  index does not hold: the lookup raised `KeyError` at artifact-writing time, which was
+  reported as an internal family crash and exited `3` — after the entire database search
+  had already been paid for. Two records sharing a prefix, such as `X/v1` and `X/v2`, also
+  collapsed into one another in the membership and convergence sets, so a family could
+  report full membership on half its proteins. Slashes are now identity: only a trailing
+  `/<start>-<end>` that spans the record is read as coordinates, and no sequence name is
+  reserved — a database may hold `3387826881` and `3387826881/356_472` as two unrelated
+  proteins. A record named `3387826881/356-472` *is* read as a region of `3387826881`
+  when its length matches those bounds, which is the round trip above, not a collision.
+  A clipped parent and a literal envelope-shaped name remain distinct when recruited
+  together or in different rounds. Literal percent sequences such as `%2F` are preserved
+  in every emitted identity.
+- Sequence names carrying a comma or a double quote no longer corrupt the two per-chunk
+  CSVs. A representative such as `protein,version` put a fourth field in a three-column
+  `<chunk>_discarded.csv` row, and a protein such as `protein"quote` was written to
+  `<chunk>_metadata.csv` as `"protein"quote"`, which any CSV reader recovers as a
+  different name. Both are now quoted and escaped properly, including punctuation after
+  a literal slash. Metadata preserves the complete protein name and separates only a
+  coordinate range spanning the representative. Ordinary names without slashes, commas
+  or quotes retain their previous bytes.
+- A failed output write could leave a family in both the generated and discarded outputs,
+  leave a partial plus a duplicate `<chunk>_discarded.csv` row, or leave its HMM and
+  alignments on disk beside a discard row. A failed family's partial files are now removed;
+  if a shared per-chunk file cannot be written, or cleanup itself fails, the run exits `1`.
+  Runs that write successfully are unaffected.
+- Discarded families no longer hold their alignments in memory for the rest of the batch,
+  lowering peak memory at large `--batch_size` and letting a run recover from one oversized
+  family's `MemoryError`.
+
+### Dependencies
+
+| Tool    | Previous version | New version |
+| ------- | ---------------- | ----------- |
+| numpy   | 2.5.1            | 2.5.3       |
+| pyhmmer | 0.12.1           | 0.12.3      |
 
 ## [2.0.0] - 2026/07/29
 

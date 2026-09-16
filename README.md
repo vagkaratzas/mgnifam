@@ -68,7 +68,7 @@ uv run mgnifam generate_families \
     --fasta_file mgnifams_input.fa \
     --output_dir output \
     --cpus 8 \
-    --chunk_num 1 \
+    --chunk_id 1 \
     --discard_min_rep_length 75 \
     --discard_max_rep_length 2000 \
     --discard_min_starting_membership 0.9 \
@@ -83,6 +83,48 @@ uv run mgnifam generate_families \
 `--fasta_file` must be an **uncompressed** FASTA — Easel cannot seek within a gzip
 stream — and its sequence names must be unique.
 
+#### Sequence names
+
+A record that is a slice of a larger protein may say so in either of two spellings, and
+both are read identically:
+
+| spelling | example | parent protein | region |
+|---|---|---|---|
+| `<protein>_<start>_<end>` | `3387826881_356_472` | `3387826881` | 356–472 |
+| `<base>/<start>-<end>` | `3387826881/356-472` | `3387826881` | 356–472 |
+
+The second is the form this tool *emits*, so `<chunk>_reps.fasta` from one release can be
+used directly as the database for the next without its coordinates being lost. The base
+keeps any slashes it carries: `3387826881/v1/356-472` is region 356–472 of the protein
+`3387826881/v1`.
+
+Bounds are read as coordinates only if they span the record exactly. `scaffold_12_34`
+holding 15 residues is a whole protein named `scaffold_12_34`, not residues 12–34 of
+`scaffold`. Anything else is identity and is kept whole — `3387826881/356_472`,
+`3387826881/356`, `3387826881/v1` and `3387826881/356-472-243` are four distinct protein
+names, none of them carrying a region.
+
+Any other character is allowed in a name, including further slashes. Names are never
+split on their first slash, so two records sharing a prefix stay distinct.
+`X` and a literal `X/1_10` remain distinct even when the same family recruits residues
+1–10 of `X` alongside the complete `X/1_10` record. Literal percent sequences such as
+`%2F` are preserved too, in both update modes and in all emitted identities.
+
+No name is *reserved*, but the slice spelling is not inert either. Whether a record is
+independent of `3387826881` depends on which spelling it uses and on its own length:
+
+| record, alongside `3387826881` | length | read as |
+|---|---|---|
+| `3387826881/356_472` | any | an unrelated protein — underscore is not the slice separator |
+| `3387826881/356-472` | 117 | region 356–472 **of** `3387826881`, by its own declaration |
+| `3387826881/356-472` | anything else | an unrelated protein — the bounds do not span it |
+
+The middle row is the round-trip working as intended: a record that says it is a region
+of `3387826881` is reported at those parent coordinates, exactly as the corresponding
+residues of `3387826881` itself would be. If a database contains both, the same residues
+are the same protein region and get the same name — they are not two things. Include the
+parent and its own slices in one database only if that is what you mean.
+
 ### Optional flags
 
 Pass every threshold explicitly on a production run. The defaults exist for ad-hoc use;
@@ -92,7 +134,7 @@ of an error.
 | flag | default | meaning |
 |---|---|---|
 | `--cpus` | `8` | Threads for FAMSA, `hmmsearch` and `hmmalign`. |
-| `--chunk_num` | `1` | Prefix for every output file and directory. Must match `[A-Za-z0-9._-]+`. |
+| `--chunk_id` | `1` | Namespace for this chunk: it prefixes every output file and directory, and every family is named `<chunk_id>_<rank>`. Any string matching `[A-Za-z0-9._-]+` — it need not be numeric. |
 | `--discard_min_rep_length` | `75` | Discard a cluster whose representative is shorter than this. |
 | `--discard_max_rep_length` | `2000` | Discard a cluster whose representative is longer than this. |
 | `--discard_min_starting_membership` | `0.9` | Discard a family if fewer than this fraction of the original cluster members are still recruited by the final model. |
@@ -136,12 +178,93 @@ byte-identical: `esl-sfetch` also records each record's `data_offset` and
 its own index but not against ours, and it sizes the index's filename field from the
 path you typed, so its output is not reproducible across directories. Ours is.
 
-`generate_families` is the only subcommand today. `mgnifam --help` lists them, and
-`python -m mgnifam` is equivalent to the console script.
+## Updating existing families
+
+`mgnifam update_families` refreshes families that already exist as HMMs against a new
+database. It is the answer to "a new release came out" — you do not re-derive the
+families from their original clusters, you search the models you already have.
+
+```bash
+uv run mgnifam update_families \
+    --hmm_input previous_output/hmm \
+    --fasta_file new_release.fa
+```
+
+`--hmm_input` is either a directory of `.hmm`/`.hmm.gz` files or a single multi-model
+library (`hmm.lib.gz` works). Both forms produce identical output for the same models.
+`--fasta_file` is uncompressed, for the same Easel reason as above.
+
+Every threshold flag from `generate_families` carries over with the same name and default.
+
+| flag | meaning |
+|---|---|
+| `--skip_refine` | Recruit once and align. The model, seed MSA and RF line are unchanged, so only `hmm/` and `full_msa/` are written and `--max_seq_identity`, `--max_seed_seqs` and `--max_gap_occupancy` are inert. Without it, the full three-round refine loop runs and writes the complete artifact set. |
+| `--chunk_id` | Labels the per-chunk aggregate files **only**. Family names come from the models, so nothing is renumbered. |
+
+### What identity means here
+
+A family keeps the name its model carries in its `NAME` field — `1_7` stays `1_7` across
+releases, in the filenames *and* in every identity-bearing field inside the outputs. Two
+consequences:
+
+- `<chunk>_updated_metadata.csv`'s `family_id` column holds `1_7`, not a bare integer. That
+  differs from `generate_families`, whose ids are a rank.
+- Chunks sharing one output root **must own disjoint family names**. Nothing enforces it,
+  because the names come from the input models rather than from `--chunk_id`.
+
+A `NAME` must match `[A-Za-z0-9._-]+` and be neither `.` nor `..`. It is interpolated into
+artifact paths and into CSV fields, and it arrives from a file this tool did not write.
+
+### Outputs
+
+Per-family artifacts land in the same `hmm/`, `full_msa/`, `seed_msa/` and `rf/`
+directories, named by family. Aggregates are `<chunk>_updated_*`: `families.tsv`,
+`metadata.csv`, `discarded.csv`, `successful.txt`, `converged.txt`, `reps.fasta.gz`,
+`delta.csv`, and `<chunk>_updated.log`.
+
+`<chunk>_updated_delta.csv` is what an update run is *for* — one row per family, whether it
+survived or not:
+
+```
+family_id,model_length_before,model_length_after,round1_recruits,full_msa_size,retention,rounds_run,converged,outcome
+```
+
+Every field but `family_id`, `model_length_before` and `outcome` may be empty, because a
+family discarded early never reached the stage that would produce one. `model_length_after`
+is the length of the model that recruited the final membership. `retention` is the fraction
+of round 1's own recruits still present at the end — under `--skip_refine` that is 1.0 by
+construction, since there are no later rounds to drift.
+
+`outcome` is `successful` or the discard reason. `no hits in the new database` means the
+model found nothing at all in the new release; `low complexity model - confounding cluster`
+means it found hits and none cleared the envelope-length filter. For an update run that
+distinction is the point.
+
+Give each run its own `--output_dir`. Re-running the same models into the same directory is
+allowed, so a failed chunk can be retried in place. Running a *smaller* set of models over a
+directory that still holds a larger one is refused rather than silently cleaned up:
+`generate_families` can clear its own past output because it derives names as
+`<chunk>_<rank>`, but an updated family keeps its model's name and `--chunk_id` never
+appears in a per-family filename, so nothing on disk says which run wrote `hmm/1_7.hmm.gz`.
+
+Input files must not overlap output paths, including through symlinks or hard links.
+This is checked before writing, for both model directories and single-file libraries.
+On an accepted retry, previous artifacts for the input family names are removed before
+processing. Discarded families therefore leave no old models, and `--skip_refine` leaves
+no seed/RF files from a previous refine run. A cleanup failure aborts the run.
+
+### Cost
+
+`hmmsearch` is `O(n_families x database)` and this command does not change that.
+`--skip_refine` is one database pass per family; refining is up to three. Against a
+billion-sequence release that term, not the alignment, is what to budget.
+
+`mgnifam --help` lists the subcommands, and `python -m mgnifam` is equivalent to the
+console script.
 
 ## Outputs
 
-Written under `--output_dir` (default: `output`), keyed by `--chunk_num`:
+Written under `--output_dir` (default: `output`), keyed by `--chunk_id`:
 
 One file per family, so one directory each:
 
@@ -173,9 +296,29 @@ Both CSVs carry a header row, so they load with `pandas.read_csv` as they are:
 | `<chunk>_metadata.csv` | `family_id,full_msa_size,protein,region,length,sequence,consensus,converged` |
 | `<chunk>_discarded.csv` | `representative,reason,value` |
 
-`protein` is quoted; `region` is `<start>-<end>` on the parent protein, or `-` when the
-representative spans a whole unsliced record. The header is written before the run
-starts, so a chunk that produces no families still yields a parseable file.
+`protein` is quoted, with embedded quotes doubled; a `protein` or `representative`
+containing a comma or a quote is escaped, so both files parse with a standard CSV reader.
+Literal slashes stay in `protein`, including punctuation after a slash: `protein/v1,variant`
+is one protein field. Only a trailing coordinate range spanning the emitted sequence is
+separated into `region`.
+`region` is `<start>-<end>` on the parent protein, or `-` when the
+representative spans a whole unsliced record. Those two columns together are the
+`<base>/<start>-<end>` spelling above, which is also how `<chunk>_reps.fasta` names its
+records. The representative is the highest-scoring
+reported domain of HMMER's top-ranked hit. The header is written before the run starts, so
+a chunk that produces no families still yields a parseable file.
+
+### Exit status
+
+The status describes whether the output is safe to consume, not only whether the process
+stopped:
+
+| Code | Meaning |
+|---|---|
+| `0` | Chunk completed. Every family landed on exactly one side of the split (discarded or successful). Output is complete and safe to consume. |
+| `1` | Fatal: the run died before finishing. **Output is incomplete and must not be consumed** — re-run the chunk. This is what a dead output sink (ENOSPC, EIO) produces, because the discard re-emit cannot record its own failure. |
+| `2` | Usage error from `argparse`. Nothing ran. |
+| `3` | Chunk completed, but one or more families died of an internal error and were recorded as discards. Output is complete and self-consistent, but those clusters produced no family — re-run the chunk once the cause is fixed, or accept the loss. |
 
 ## Why this is fast now
 

@@ -14,10 +14,11 @@ import argparse
 import sys
 from collections.abc import Callable, Sequence
 
-from mgnifam import __version__, generate_families
+from mgnifam import __version__, generate_families, update_families
 
 COMMANDS: dict[str, Callable[[Sequence[str]], None]] = {
     "generate_families": generate_families.main,
+    "update_families": update_families.main,
 }
 
 
