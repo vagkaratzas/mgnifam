@@ -83,6 +83,48 @@ uv run mgnifam generate_families \
 `--fasta_file` must be an **uncompressed** FASTA — Easel cannot seek within a gzip
 stream — and its sequence names must be unique.
 
+#### Sequence names
+
+A record that is a slice of a larger protein may say so in either of two spellings, and
+both are read identically:
+
+| spelling | example | parent protein | region |
+|---|---|---|---|
+| `<protein>_<start>_<end>` | `3387826881_356_472` | `3387826881` | 356–472 |
+| `<base>/<start>-<end>` | `3387826881/356-472` | `3387826881` | 356–472 |
+
+The second is the form this tool *emits*, so `<chunk>_reps.fasta` from one release can be
+used directly as the database for the next without its coordinates being lost. The base
+keeps any slashes it carries: `3387826881/v1/356-472` is region 356–472 of the protein
+`3387826881/v1`.
+
+Bounds are read as coordinates only if they span the record exactly. `scaffold_12_34`
+holding 15 residues is a whole protein named `scaffold_12_34`, not residues 12–34 of
+`scaffold`. Anything else is identity and is kept whole — `3387826881/356_472`,
+`3387826881/356`, `3387826881/v1` and `3387826881/356-472-243` are four distinct protein
+names, none of them carrying a region.
+
+Any other character is allowed in a name, including further slashes. Names are never
+split on their first slash, so two records sharing a prefix stay distinct.
+`X` and a literal `X/1_10` remain distinct even when the same family recruits residues
+1–10 of `X` alongside the complete `X/1_10` record. Literal percent sequences such as
+`%2F` are preserved too, in both update modes and in all emitted identities.
+
+No name is *reserved*, but the slice spelling is not inert either. Whether a record is
+independent of `3387826881` depends on which spelling it uses and on its own length:
+
+| record, alongside `3387826881` | length | read as |
+|---|---|---|
+| `3387826881/356_472` | any | an unrelated protein — underscore is not the slice separator |
+| `3387826881/356-472` | 117 | region 356–472 **of** `3387826881`, by its own declaration |
+| `3387826881/356-472` | anything else | an unrelated protein — the bounds do not span it |
+
+The middle row is the round-trip working as intended: a record that says it is a region
+of `3387826881` is reported at those parent coordinates, exactly as the corresponding
+residues of `3387826881` itself would be. If a database contains both, the same residues
+are the same protein region and get the same name — they are not two things. Include the
+parent and its own slices in one database only if that is what you mean.
+
 ### Optional flags
 
 Pass every threshold explicitly on a production run. The defaults exist for ad-hoc use;
@@ -254,8 +296,15 @@ Both CSVs carry a header row, so they load with `pandas.read_csv` as they are:
 | `<chunk>_metadata.csv` | `family_id,full_msa_size,protein,region,length,sequence,consensus,converged` |
 | `<chunk>_discarded.csv` | `representative,reason,value` |
 
-`protein` is quoted; `region` is `<start>-<end>` on the parent protein, or `-` when the
-representative spans a whole unsliced record. The representative is the highest-scoring
+`protein` is quoted, with embedded quotes doubled; a `protein` or `representative`
+containing a comma or a quote is escaped, so both files parse with a standard CSV reader.
+Literal slashes stay in `protein`, including punctuation after a slash: `protein/v1,variant`
+is one protein field. Only a trailing coordinate range spanning the emitted sequence is
+separated into `region`.
+`region` is `<start>-<end>` on the parent protein, or `-` when the
+representative spans a whole unsliced record. Those two columns together are the
+`<base>/<start>-<end>` spelling above, which is also how `<chunk>_reps.fasta` names its
+records. The representative is the highest-scoring
 reported domain of HMMER's top-ranked hit. The header is written before the run starts, so
 a chunk that produces no families still yields a parseable file.
 

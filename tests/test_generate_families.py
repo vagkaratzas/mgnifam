@@ -17,6 +17,7 @@ deleting them as redundant.
 import argparse
 import ast
 import contextlib
+import csv
 import gc
 import gzip
 import io
@@ -381,6 +382,64 @@ def test_underscores_in_protein_names_are_not_mistaken_for_slice_bounds() -> Non
     assert gf.parse_protein_name("scaffold_12_34", repeat, real_slice) == "scaffold/12-21"
 
 
+def test_slash_bearing_names_keep_their_identity_and_round_trip_their_coordinates() -> None:
+    """A slash in a database name is identity, not a separator.
+
+    Splitting at the first slash fetched a truncated name, so every ordinary identifier
+    carrying one raised `KeyError` at emission -- after the whole database search had been
+    paid for -- and `family_guard` reported it as an internal family crash rather than as
+    its input. Distinct records sharing a prefix also collapsed into one another in the
+    membership and convergence sets.
+
+    The `<base>/<start>-<end>` slice form is what `parse_protein_name` itself emits, so a
+    representatives FASTA from one release is a valid database for the next.
+    """
+    repeat = "MKVLAAGIVG"
+    record = f"{repeat}QQQQQ{repeat}QQQQQ"  # 30 residues, spanned by bounds 101..130
+
+    # Both slice spellings name the same protein at the same coordinates.
+    underscore = FakeSequences({"3387826881_101_130": record})
+    slashed = FakeSequences({"3387826881/101-130": record})
+    assert (
+        gf.parse_protein_name("3387826881_101_130/1_10", repeat, underscore) == "3387826881/101-110"
+    )
+    assert (
+        gf.parse_protein_name("3387826881%2F101-130/1_10", repeat, slashed) == "3387826881/101-110"
+    )
+
+    # Output is a valid input: renaming the record to what the line above produced and
+    # re-running gives that same name back.
+    fed_back = FakeSequences({"3387826881/101-110": repeat})
+    assert gf.parse_protein_name("3387826881%2F101-110", repeat, fed_back) == "3387826881/101-110"
+
+    # The base keeps every slash it came with, so a version segment survives.
+    versioned = FakeSequences({"3387826881/v1/101-130": record})
+    assert (
+        gf.parse_protein_name("3387826881%2Fv1%2F101-130/16_25", repeat, versioned)
+        == "3387826881/v1/116-125"
+    )
+
+    # Names whose trailing segment is not `<digits>-<digits>` are whole identities. Each of
+    # these raised `KeyError` on the truncated prefix before.
+    for name in ("3387826881/101_130", "3387826881/101", "3387826881/v1", "3387826881/101-130-243"):
+        store = FakeSequences({name: repeat})
+        encoded = gf.encode_record_name(name)
+        assert gf.parse_protein_name(encoded, repeat, store) == name
+        assert gf.parse_protein_name(encoded, repeat[:5], store) == f"{name}/1-5"
+
+    # Two records sharing a prefix are two proteins, not one.
+    assert gf.strip_envelope("3387826881%2Fv1") == "3387826881/v1"
+    assert gf.strip_envelope("3387826881%2Fv1/5_20") == "3387826881/v1"
+    assert gf.check_seed_membership(["3387826881/v1", "3387826881/v2"], ["3387826881/v1"]) == 0.5
+
+    # A literal envelope-shaped name is escaped before any envelope is appended.
+    collide = FakeSequences({"3387826881": repeat * 2, "3387826881/1_10": repeat})
+    assert gf.parse_protein_name("3387826881%2F1_10", repeat, collide) == "3387826881/1_10"
+    assert gf.parse_protein_name("3387826881/1_10", repeat, collide) == "3387826881/1-10"
+    assert gf.strip_envelope("3387826881%2F1_10") == "3387826881/1_10"
+    assert gf.strip_envelope("3387826881/1_10") == "3387826881"
+
+
 def test_seed_membership_counts_distinct_proteins_on_both_sides() -> None:
     """Membership is a ratio of distinct proteins, so it can never exceed 1.
 
@@ -391,8 +450,11 @@ def test_seed_membership_counts_distinct_proteins_on_both_sides() -> None:
     assert gf.check_seed_membership(["a", "b", "c"], ["a", "b", "c"]) == 1.0
     assert gf.check_seed_membership(["a", "a", "b", "c"], ["a", "b", "c"]) == 1.0
 
-    # Envelope suffixes collapse to the parent protein on both sides.
-    assert gf.check_seed_membership(["p/1_9", "p/20_30"], ["p/1_9"]) == 1.0
+    # Callers reduce masked rows to their records first; two envelopes of one protein
+    # are one protein on the recruited side.
+    masked = ["p/1_9", "p/20_30"]
+    recruited = gf.unmask_sequence_names([gf.Sequence(name, "") for name in masked])
+    assert gf.check_seed_membership(["p"], recruited) == 1.0
 
     # Genuine loss still measures as loss.
     assert gf.check_seed_membership(["a", "b", "c", "d"], ["a", "b"]) == 0.5
@@ -420,6 +482,75 @@ def family_options(**changes: object) -> argparse.Namespace:
     )
     options.update(changes)
     return argparse.Namespace(**options)
+
+
+@pytest.mark.parametrize("literal_first", [False, True])
+def test_masked_and_literal_names_coexist_through_emission(
+    tmp_path: Path, literal_first: bool
+) -> None:
+    """Keep a masked X distinct from literal X/1_10 in the same family and across MSAs.
+
+    The seed holds whole records while the full MSA carries a clipped X. Percent-like
+    raw names must also remain distinct from the internal escape spelling.
+    """
+    residues = "MKVLAAGIVG"
+    names = ["X", "X/1_10", "X%2F1_10", "X%252F1_10"]
+    if literal_first:
+        names.reverse()
+    fasta = tmp_path / "collisions.fa"
+    fasta.write_text(
+        "".join(f">{name}\n{residues + ('QQQQQ' if name == 'X' else '')}\n" for name in names)
+    )
+    index = tmp_path / "collisions.ssi"
+    gf.build_ssi_index(fasta, index)
+    for directory in gf.FAMILY_DIRECTORIES:
+        (tmp_path / directory).mkdir()
+    with (
+        pyhmmer.easel.SSIReader(index) as reader,
+        pyhmmer.easel.SequenceFile(fasta, digital=False, index=reader) as handle,
+    ):
+        indexed = gf.IndexedSequences(handle)
+        family = gf.Family(names[0], names.copy())
+        family.initialise(indexed, 1)
+        family.hmm = gf.run_hmmbuild(family.seed_msa, "probe")
+        family.qlen = 10
+        family.records = [(name, 15 if name == "X" else 10, 1, 10) for name in names]
+        options = family_options()
+        family.advance(options, indexed, gf.MAX_ROUNDS)
+        assert family.total_checked_sequences == set(names)
+        family.finish(options, indexed)
+        assert family.state is gf.FamilyState.SUCCESSFUL
+        assert family.membership == 1.0
+        assert family.full_msa_num_seqs == len(names)
+
+        writers = gf.Writers(
+            root=tmp_path,
+            indexed=indexed,
+            refined_families=io.StringIO(),
+            discarded_clusters=io.StringIO(),
+            successful_clusters=io.StringIO(),
+            converged_families=io.StringIO(),
+            family_metadata=io.StringIO(),
+            family_representatives=io.StringIO(),
+        )
+        # Initial FAMSA seeds have no RF line; emit that seed's model explicitly.
+        family.seed_msa.reference = "x" * len(family.seed_msa.textize().alignment[0])
+        assert gf.emit_family(family, 0, "probe", writers, final_hmm=family.hmm) == 1
+        expected = {"X/1-10", *names} - {"X"}
+        assert {
+            row.split("\t")[1] for row in writers.refined_families.getvalue().splitlines()
+        } == expected
+        for directory, expected_names in (("seed_msa", set(names)), ("full_msa", expected)):
+            with pyhmmer.easel.MSAFile(tmp_path / directory / "probe_1.sto.gz") as msa_file:
+                assert set(msa_file.read().names) == expected_names
+
+        # Keeping only the literal record is a real loss of X.
+        family.state = gf.FamilyState.RUNNING
+        family.records = [("X/1_10", 10, 1, 10)]
+        family.finish(options, indexed)
+        assert family.state is gf.FamilyState.DISCARDED
+        assert family.discard_reason == "few seed sequences remained"
+        assert family.membership == 0.25
 
 
 def test_small_msa_is_discarded_before_another_build(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -506,6 +637,73 @@ def test_converged_discard_is_not_recorded(tmp_path: Path, monkeypatch: pytest.M
     success_count = gf.emit_family(successful, success_count, "chunk", writers)
     assert success_count == 1
     assert writers.converged_families.getvalue() == "1\n"
+
+
+@pytest.mark.parametrize(
+    ("name", "protein", "region"),
+    [
+        ('protein"quote', 'protein"quote', "-"),
+        ("protein/v1", "protein/v1", "-"),
+        ('protein/v1,"variant', 'protein/v1,"variant', "-"),
+        ('protein/v1,"variant/101-104', 'protein/v1,"variant', "101-104"),
+        ("protein/v1/101-130", "protein/v1/101-130", "-"),
+        ("protein/v1/1_4", "protein/v1/1_4", "-"),
+    ],
+)
+def test_csv_rows_round_trip_comma_and_quote_bearing_names(
+    tmp_path: Path, name: str, protein: str, region: str
+) -> None:
+    """Both per-chunk CSVs must survive the punctuation a FASTA name is allowed to carry.
+
+    Neither column is drawn from the validated family-name alphabet: they hold whatever
+    the input database called the sequence. Interpolating that produced a fourth field
+    in a three-column discard row, and a metadata protein whose embedded quote closed
+    the field early -- `csv` then recovered a different identity with no error anywhere.
+    """
+    store = FakeSequences({name: "AAAA"})
+    for directory in gf.FAMILY_DIRECTORIES:
+        (tmp_path / directory).mkdir()
+    writers = gf.Writers(
+        root=tmp_path,
+        indexed=store,
+        refined_families=io.StringIO(),
+        discarded_clusters=io.StringIO(gf.DISCARDED_HEADER),
+        successful_clusters=io.StringIO(),
+        converged_families=io.StringIO(),
+        family_metadata=io.StringIO(gf.METADATA_HEADER),
+        family_representatives=io.StringIO(),
+    )
+    for handle in (writers.discarded_clusters, writers.family_metadata):
+        handle.seek(0, io.SEEK_END)
+
+    discarded = gf.Family("protein,version", [], state=gf.FamilyState.DISCARDED)
+    discarded.discard_reason = "too few sequences before initial hmmbuild"
+    discarded.discard_value = 1
+    assert gf.emit_family(discarded, 0, "chunk", writers) == 0
+
+    successful = gf.Family(
+        name,
+        [name],
+        state=gf.FamilyState.SUCCESSFUL,
+        seed_msa=text_msa([gf.encode_record_name(name)], ["AAAA"], "xxxx").digitize(gf.ALPHABET),
+        full_msa=text_msa([gf.encode_record_name(name)], ["AAAA"], "xxxx"),
+        full_msa_num_seqs=1,
+    )
+    assert gf.emit_family(successful, 0, "chunk", writers) == 1
+
+    (discard_row,) = csv.DictReader(io.StringIO(writers.discarded_clusters.getvalue()))
+    assert discard_row == {
+        "representative": "protein,version",
+        "reason": "too few sequences before initial hmmbuild",
+        "value": "1",
+    }
+    (metadata_row,) = csv.DictReader(io.StringIO(writers.family_metadata.getvalue()))
+    assert metadata_row["protein"] == protein
+    assert metadata_row["region"] == region
+    assert metadata_row["length"] == "4"
+    assert metadata_row["sequence"] == "AAAA"
+    assert None not in metadata_row
+    assert len(metadata_row) == len(gf.METADATA_HEADER.strip().split(","))
 
 
 def test_failed_artifact_write_leaves_no_row_in_the_shared_files(

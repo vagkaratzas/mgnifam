@@ -33,6 +33,7 @@ nothing may be written until a family's fate is known. See `emit_family`.
 
 import argparse
 import contextlib
+import csv
 import gzip
 import io
 import itertools
@@ -63,6 +64,9 @@ CHUNK_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
 # Per-family artifacts: one file per family, so they get a directory each. Everything
 # else is a single file per chunk and lives flat in the output root as `<chunk>_*`.
 FAMILY_DIRECTORIES = ("seed_msa", "full_msa", "hmm", "rf")
+# External slice names use dashes. Internal alignment names escape literal slashes
+# before adding an envelope suffix; see `encode_record_name`.
+SLICE_SUFFIX = re.compile(r"(.+)/(\d+)-(\d+)")
 # Header rows for the two per-chunk CSVs, written by `main` before any result. Column
 # order is the order `emit_family` writes, and must be changed with it.
 METADATA_HEADER = "family_id,full_msa_size,protein,region,length,sequence,consensus,converged\n"
@@ -253,7 +257,11 @@ def run_initial_msa(
     for member in members:
         sequence = indexed_sequences.get(member, missing_ok=True)
         if sequence is not None:
-            sequences.append(pyfamsa.Sequence(id=member.encode(), sequence=sequence.seq.encode()))
+            sequences.append(
+                pyfamsa.Sequence(
+                    id=encode_record_name(member).encode(), sequence=sequence.seq.encode()
+                )
+            )
     if not sequences:
         return None
     # FAMSA's output is independent of the thread count, so honouring `cpus` costs
@@ -377,7 +385,19 @@ def extract_records(top_hits: Any) -> list[Record]:
     ]
 
 
+def encode_record_name(name: str) -> str:
+    """Escape a raw database name for use in an internal alignment row.
+
+    Escape percent first so literal `%2F` and `/` remain distinct. Both initial seeds
+    and recruits use this encoding, including whole records. A literal slash can then
+    only introduce an envelope, even across rounds; ordinary accession names keep
+    their original bytes. Decode only at database lookups and output boundaries.
+    """
+    return name.replace("%", "%25").replace("/", "%2F")
+
+
 def mask_sequence(sequence: Sequence, env_from: int, env_to: int) -> Sequence:
+    """Clip an internally named sequence to its 1-based inclusive hit envelope."""
     return Sequence(f"{sequence.id}/{env_from}_{env_to}", sequence.seq[env_from - 1 : env_to])
 
 
@@ -390,8 +410,9 @@ def filter_hits(
 ) -> list[Sequence]:
     """Resolve hit records to sequences, keeping those whose envelope is long enough.
 
-    Sequences whose envelope covers only part of the target are masked down to it, and
-    renamed `<name>/<env_from>_<env_to>`.
+    All returned names are encoded for internal alignment use. Partial targets are
+    clipped and gain `/<env_from>_<env_to>` after that encoding, so masking `X` cannot
+    collide with a literal database record named `X/<env_from>_<env_to>`.
 
     `exit_flag` waives the length requirement. The exit branch calls this a second time
     over the same records, which is why the records are cached rather than re-searched.
@@ -401,6 +422,7 @@ def filter_hits(
         envelope_length = env_to - env_from + 1
         if exit_flag or envelope_length >= recruit_hit_length_percentage * qlen:
             sequence = cast(Sequence, indexed_sequences.get(name))
+            sequence = Sequence(encode_record_name(name), sequence.seq)
             if envelope_length < target_length:
                 sequence = mask_sequence(sequence, env_from, env_to)
             filtered_sequences.append(sequence)
@@ -511,12 +533,17 @@ def clip_ends(msa: pyhmmer.easel.TextMSA, occupancy_threshold: float) -> pyhmmer
     return msa.select(columns=range(start_position, end_position + 1))
 
 
-def extract_first_part(sequence_name: str) -> str:
-    return sequence_name.split("/")[0]
+def strip_envelope(sequence_name: str) -> str:
+    """Recover a raw database name from an encoded internal alignment row.
+
+    Strip the envelope before decoding and decode percent last, so a literal `%2F`
+    cannot be mistaken for an escaped slash.
+    """
+    return sequence_name.partition("/")[0].replace("%2F", "/").replace("%25", "%")
 
 
 def unmask_sequence_names(sequences: Iterable[Sequence]) -> list[str]:
-    return [extract_first_part(name) for name, _ in sequences]
+    return [strip_envelope(name) for name, _ in sequences]
 
 
 def check_seed_membership(
@@ -524,17 +551,25 @@ def check_seed_membership(
 ) -> float:
     """Return the fraction of the cluster's distinct proteins still recruited.
 
-    Both sides are counted after `extract_first_part` and as sets, so the ratio cannot
-    exceed 1. Dividing by the raw row count instead would let a cluster TSV that repeats
-    a member report less than full membership for a family that kept every one of them.
+    Both sides are counted as sets, so the ratio cannot exceed 1. Dividing by the raw row
+    count instead would let a cluster TSV that repeats a member report less than full
+    membership for a family that kept every one of them. Callers pass names already
+    reduced to their database records by `unmask_sequence_names`; cluster members arrive
+    unmasked and need no reduction.
     """
-    original_first_parts = set(map(extract_first_part, original_sequence_names))
-    filtered_first_parts = set(map(extract_first_part, filtered_sequence_names))
-    return len(original_first_parts & filtered_first_parts) / len(original_first_parts)
+    original_records = set(original_sequence_names)
+    filtered_records = set(filtered_sequence_names)
+    return len(original_records & filtered_records) / len(original_records)
 
 
 def split_slice_name(record_name: str, record_length: int) -> tuple[str, int] | None:
-    """Split `<protein>_<start>_<end>` into its parent protein and 1-based start.
+    """Split a slice name into its parent protein and 1-based start.
+
+    Two spellings are accepted: `<protein>_<start>_<end>`, the original database form, and
+    `<base>/<start>-<end>`, the form this module emits. Supporting the second is what lets
+    a representatives FASTA from one release serve as the database for the next without
+    every one of its names being read as a whole protein at invented coordinates. `<base>`
+    keeps its slashes, so `3387826881/v1/356-472` is residue 356 of `3387826881/v1`.
 
     Returns None when `record_name` is not a slice, so the caller reads it as the name of
     a whole protein.
@@ -552,8 +587,12 @@ def split_slice_name(record_name: str, record_length: int) -> tuple[str, int] | 
     field. A name whose trailing fields are not numeric (`contig_1_gene_x`) reached
     `int()` and raised, which `family_guard` then recorded as an internal-error discard.
     """
-    protein, _, end = record_name.rpartition("_")
-    protein, _, start = protein.rpartition("_")
+    slice_match = SLICE_SUFFIX.fullmatch(record_name)
+    if slice_match:
+        protein, start, end = slice_match.group(1), slice_match.group(2), slice_match.group(3)
+    else:
+        protein, _, end = record_name.rpartition("_")
+        protein, _, start = protein.rpartition("_")
     if not protein or not start.isdigit() or not end.isdigit():
         return None
     if int(end) - int(start) + 1 != record_length:
@@ -561,11 +600,16 @@ def split_slice_name(record_name: str, record_length: int) -> tuple[str, int] | 
     return protein, int(start)
 
 
-def parse_protein_name(row_name: str, aligned_row: str, indexed_sequences: IndexedSequences) -> str:
-    """Rename one alignment row to `<protein>/<start>-<end>` on the parent protein.
+def parse_protein_name(
+    row_name: str,
+    aligned_row: str,
+    indexed_sequences: IndexedSequences,
+) -> str:
+    """Rename one encoded alignment row to external parent-protein coordinates.
 
     Database records are themselves slices of a protein, named `<protein>_<start>_<end>`
-    with 1-based inclusive bounds. `mask_sequence` clips a record further to a hit
+    or `<base>/<start>-<end>` with 1-based inclusive bounds -- see `split_slice_name`.
+    `mask_sequence` clips a record further to a hit
     envelope and appends `/<env_from>_<env_to>`, relative to the record. Column trimming
     (`clip_env_ends`, `clip_ends`, `run_pytrimal_reps`) then drops residues from either
     end of the row, by a different amount per row, so the row's offset within its record
@@ -574,11 +618,14 @@ def parse_protein_name(row_name: str, aligned_row: str, indexed_sequences: Index
     The envelope bounds the search. Locating the residues in the whole record -- what the
     legacy script did -- returns the first match, so two identical repeat domains of one
     protein resolved to the same name and one of them was dropped as a duplicate.
+
+    Literal slashes in database names are escaped in every internal row, so an envelope
+    is unambiguous even when the database contains both `X` and `X/356_472`.
     """
-    record_name, _, envelope = row_name.partition("/")
+    record_name = strip_envelope(row_name)
+    _, _, envelope = row_name.partition("/")
     record = cast(Sequence, indexed_sequences.get(record_name)).seq
     residues = re.sub(r"[.\-~]", "", aligned_row).upper()
-
     if envelope:
         env_from, env_to = (int(bound) for bound in envelope.split("_"))
     else:
@@ -602,7 +649,9 @@ def parse_protein_name(row_name: str, aligned_row: str, indexed_sequences: Index
 
 
 def renumber_msa(
-    msa: pyhmmer.easel.TextMSA, family_name: str, indexed_sequences: IndexedSequences
+    msa: pyhmmer.easel.TextMSA,
+    family_name: str,
+    indexed_sequences: IndexedSequences,
 ) -> pyhmmer.easel.TextMSA:
     """Return a copy of `msa` whose rows are named in parent-protein coordinates.
 
@@ -930,8 +979,11 @@ def emit_family(
         # again and appends the row a second time. A partial first write followed by a
         # successful retry duplicated it.
         try:
-            writers.discarded_clusters.write(
-                f"{family.representative},{family.discard_reason},{family.discard_value}\n"
+            # Representatives come from the input FASTA, which reserves no alphabet, so a
+            # comma or quote in a name has to be quoted rather than interpolated. With the
+            # default `QUOTE_MINIMAL` a name needing neither is written exactly as before.
+            csv.writer(writers.discarded_clusters, lineterminator="\n").writerow(
+                (family.representative, family.discard_reason, family.discard_value)
             )
             write_delta(writers, delta_row)
         except Exception as error:
@@ -1018,10 +1070,22 @@ def emit_family(
             if row_number == 0:
                 # Row 0 is the representative: the top hit's highest-scoring domain leads.
                 residues = re.sub(r"[.\-~]", "", row).upper()
-                protein, _, region = sequence_name.partition("/")
+                # Literal slashes belong to the protein. Only a suffix spanning this
+                # emitted row is a coordinate range; use the same rule as FASTA input.
+                bounds = split_slice_name(sequence_name, len(residues))
+                protein, region = sequence_name, "-"
+                if bounds is not None:
+                    protein, start = bounds
+                    region = f"{start}-{start + len(residues) - 1}"
+                # The column is quoted unconditionally, which already survives a comma; an
+                # embedded quote still has to be doubled or it closes the field early and
+                # `csv` silently hands back a different identity. Kept as an f-string rather
+                # than a `csv.writer` row so the always-quoted convention holds: under
+                # `QUOTE_MINIMAL` every ordinary name would lose its quotes.
+                quoted_protein = protein.replace('"', '""')
                 writers.family_metadata.write(
-                    f'{family_id},{family.full_msa_num_seqs},"{protein}",'
-                    f"{region or '-'},{len(residues)},{residues},{final_hmm.consensus},"
+                    f'{family_id},{family.full_msa_num_seqs},"{quoted_protein}",'
+                    f"{region},{len(residues)},{residues},{final_hmm.consensus},"
                     f"{family.ever_converged}\n"
                 )
                 # `family_name`, not a second `f"{chunk}_{id}"`: with a preserved name and
