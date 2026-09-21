@@ -13,6 +13,23 @@ dependency versions pinned in `uv.lock` (`uv sync --frozen`). Installing from Py
 pyhmmer, pyfamsa and pytrimal within their declared ranges instead, and a different
 resolution may change results.
 
+## [3.1.0] - 2026/09/21
+
+### Added
+
+- **MultiQC summary.** A completed `generate_families` run writes `<chunk>_stats.json`:
+  family counts, discard reasons, and histograms of full-MSA size, model length and
+  representative length. `update_families` writes `<chunk>_updated_stats.json` with the
+  same fields plus model-length change, rounds run and retention. The file is present only
+  after a completed run (exit `0` or `3`), and byte-reproducible like the other outputs.
+- **Citation metadata.** `CITATION.cff` describes how to cite mgnifam. Releases are
+  archived on Zenodo, and the README links the latest DOI.
+
+### Changed
+
+- `--recruit_evalue_cutoff` must now be finite as well as positive. `inf` and `nan` are
+  rejected before any output is written.
+
 ## [3.0.0] - 2026/09/16
 
 A major version because three documented behaviours change: `--chunk_num` is removed in

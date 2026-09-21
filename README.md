@@ -9,6 +9,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/mgnifam)](https://pypi.org/project/mgnifam/)
 [![Bioconda](https://img.shields.io/conda/vn/bioconda/mgnifam)](https://bioconda.github.io/recipes/mgnifam/README.html#package-package%20&#x27;mgnifam&#x27;)
+[![DOI](https://zenodo.org/badge/1296385054.svg)](https://zenodo.org/badge/latestdoi/1296385054)
 
 Iterative HMM-based protein family generation over very large sequence databases.
 
@@ -220,7 +221,7 @@ artifact paths and into CSV fields, and it arrives from a file this tool did not
 Per-family artifacts land in the same `hmm/`, `full_msa/`, `seed_msa/` and `rf/`
 directories, named by family. Aggregates are `<chunk>_updated_*`: `families.tsv`,
 `metadata.csv`, `discarded.csv`, `successful.txt`, `converged.txt`, `reps.fasta.gz`,
-`delta.csv`, and `<chunk>_updated.log`.
+`delta.csv`, `stats.json` (see [MultiQC](#multiqc)), and `<chunk>_updated.log`.
 
 `<chunk>_updated_delta.csv` is what an update run is *for* — one row per family, whether it
 survived or not:
@@ -285,6 +286,7 @@ One file per chunk, so flat in the output root:
 | `<chunk>_successful.txt` | representatives that produced a family |
 | `<chunk>_discarded.csv` | one row per discarded cluster |
 | `<chunk>_converged.txt` | ids of successful families that converged naturally |
+| `<chunk>_stats.json` | run summary for [MultiQC](#multiqc); present only after a completed run |
 | `<chunk>.log` | run log |
 
 Family ids are a 1-based rank among *successful* families, in cluster-file order.
@@ -319,6 +321,27 @@ stopped:
 | `1` | Fatal: the run died before finishing. **Output is incomplete and must not be consumed** — re-run the chunk. This is what a dead output sink (ENOSPC, EIO) produces, because the discard re-emit cannot record its own failure. |
 | `2` | Usage error from `argparse`. Nothing ran. |
 | `3` | Chunk completed, but one or more families died of an internal error and were recorded as discards. Output is complete and self-consistent, but those clusters produced no family — re-run the chunk once the cause is fixed, or accept the loss. |
+
+### MultiQC
+
+Every completed run (exit `0` or `3`) writes one `<chunk>_stats.json`: counts of families
+in, successful, discarded, converged and crashed; discard reasons; and `{value: count}`
+histograms of full-MSA size, model length and representative length. It is read back from
+the chunk's own CSVs, so it never disagrees with them. One chunk is one MultiQC sample, and
+MultiQC merges a pipeline's chunks into one report.
+
+The file is written last and atomically, and a rerun removes the previous one before it
+changes anything else. **Its presence therefore means the directory holds a completed,
+consumable run**; exit `1` leaves none. It records only the flags that change results, so
+it is byte-identical across `--cpus`, `--batch_size` and `--prefetch_targets` like the
+other outputs. `"tool": "mgnifam"` is its first key, and `schema_version` changes only
+when its shape does.
+
+`update_families` writes the same summary as `<chunk>_updated_stats.json`, read back from
+its delta and metadata CSVs. It adds `skip_refine` to the recorded flags and three
+histograms: `model_length_change` (after minus before), `rounds_run` and `retention`.
+Retention keys are the exact `delta.csv` values, and a family with no retention is left
+out. In both files `converged` counts successful families only.
 
 ## Why this is fast now
 

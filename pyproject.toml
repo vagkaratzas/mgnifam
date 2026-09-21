@@ -1,6 +1,6 @@
 [project]
 name = "mgnifam"
-version = "3.0.0"
+version = "3.1.0"
 description = "Iterative HMM-based protein family generation over very large sequence databases"
 readme = "README.md"
 license = "MIT"

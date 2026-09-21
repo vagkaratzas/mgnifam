@@ -37,13 +37,17 @@ import csv
 import gzip
 import io
 import itertools
+import json
 import logging
+import math
 import os
 import re
+import secrets
 import shutil
 import tempfile
 import threading
 import time
+from collections import Counter
 from collections.abc import Generator, Iterable, Iterator, Mapping
 from collections.abc import Sequence as SequenceCollection
 from dataclasses import dataclass, field
@@ -55,6 +59,8 @@ import numpy as np
 import pyfamsa
 import pyhmmer
 import pytrimal
+
+from mgnifam import __version__
 
 ALPHABET = pyhmmer.easel.Alphabet.amino()
 MAX_ROUNDS = 3
@@ -71,6 +77,21 @@ SLICE_SUFFIX = re.compile(r"(.+)/(\d+)-(\d+)")
 # order is the order `emit_family` writes, and must be changed with it.
 METADATA_HEADER = "family_id,full_msa_size,protein,region,length,sequence,consensus,converged\n"
 DISCARDED_HEADER = "representative,reason,value\n"
+# The per-run summary a MultiQC module parses from another repository, so a breaking change
+# to its shape must bump this. Only flags that change results are recorded: paths, --cpus,
+# --batch_size and --prefetch_targets do not, and leaving them out keeps the file inside the
+# byte-reproducibility contract.
+STATS_SCHEMA_VERSION = 1
+STATS_PARAMETERS = (
+    "discard_min_rep_length",
+    "discard_max_rep_length",
+    "discard_min_starting_membership",
+    "max_seq_identity",
+    "max_seed_seqs",
+    "max_gap_occupancy",
+    "recruit_evalue_cutoff",
+    "recruit_hit_length_percentage",
+)
 # Gives every `configure_logger` call its own name in the `logging` cache. See its docstring.
 _logger_serial = itertools.count()
 
@@ -1179,8 +1200,10 @@ def validate_inputs(options: argparse.Namespace) -> dict[str, list[str]]:
     ):
         if not 0 <= getattr(options, name) <= 1:
             raise ValueError(f"{name} must be in [0, 1]")
-    if options.recruit_evalue_cutoff <= 0:
-        raise ValueError("recruit_evalue_cutoff must be positive")
+    # Written as a comparison chain so NaN fails it too. Infinity would also reach the stats
+    # file as a non-standard JSON token.
+    if not 0 < options.recruit_evalue_cutoff < math.inf:
+        raise ValueError("recruit_evalue_cutoff must be positive and finite")
     if options.max_seed_seqs < 1:
         raise ValueError("max_seed_seqs must be at least 1")
     if options.discard_min_rep_length < 1 or options.discard_max_rep_length < 1:
@@ -1195,7 +1218,11 @@ def prepare_output_directories(root: Path, chunk: str) -> None:
 
     Without the clearing step, a rerun that produces fewer families leaves the surplus
     behind and the directory mixes two runs.
+
+    The stats file goes first: it marks a completed run, and from here on the directory
+    no longer holds one.
     """
+    (root / f"{chunk}_stats.json").unlink(missing_ok=True)
     for directory in FAMILY_DIRECTORIES:
         (root / directory).mkdir(parents=True, exist_ok=True)
     # An exact numeric suffix, not a `<chunk>_*` glob: chunk "foo" would otherwise
@@ -1205,6 +1232,95 @@ def prepare_output_directories(root: Path, chunk: str) -> None:
         for path in (root / directory).iterdir():
             if path.is_file() and artifact_pattern.fullmatch(path.name):
                 path.unlink()
+
+
+def guard_stats_path(path: Path, inputs: Iterable[str | os.PathLike[str] | None]) -> None:
+    """Refuse a stats destination that is one of the inputs: `os.replace` would overwrite it."""
+    for source in filter(None, inputs):
+        if path.resolve() == Path(source).resolve() or (path.exists() and path.samefile(source)):
+            raise ValueError(f"output path {path} overlaps an input file")
+
+
+def histogram(values: Iterable[str]) -> dict[str, int]:
+    """Count CSV field values, keyed by the value exactly as written, in numeric order."""
+    counts = Counter(values)
+    return {value: counts[value] for value in sorted(counts, key=float)}
+
+
+def metadata_histograms(path: Path) -> dict[str, dict[str, int]]:
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    return {
+        "full_msa_size": histogram(row["full_msa_size"] for row in rows),
+        # One consensus residue per match state, so this is the emitted model's length.
+        "model_length": histogram(str(len(row["consensus"])) for row in rows),
+        "representative_length": histogram(row["length"] for row in rows),
+    }
+
+
+def stats_header(
+    command: str, options: argparse.Namespace, crashed: int, parameters: Iterable[str]
+) -> dict[str, object]:
+    # `tool` leads so a MultiQC search pattern can match it within the first lines.
+    return {
+        "tool": "mgnifam",
+        "schema_version": STATS_SCHEMA_VERSION,
+        "version": __version__,
+        "command": command,
+        "chunk_id": options.chunk_id,
+        "exit_status": EXIT_CRASHED_FAMILIES if crashed else 0,
+        "parameters": {name: getattr(options, name) for name in parameters},
+    }
+
+
+def generate_stats(root: Path, options: argparse.Namespace, crashed: int) -> dict[str, object]:
+    """Summarise a completed chunk by reading its own aggregates back.
+
+    Read back rather than counted in the loop, so the summary cannot disagree with the
+    CSVs, and so nothing new crosses the containment boundaries in `emit_family`.
+    """
+    chunk = options.chunk_id
+    with (root / f"{chunk}_metadata.csv").open(newline="", encoding="utf-8") as handle:
+        converged = [row["converged"] == "True" for row in csv.DictReader(handle)]
+    with (root / f"{chunk}_discarded.csv").open(newline="", encoding="utf-8") as handle:
+        reasons = Counter(row["reason"] for row in csv.DictReader(handle))
+    discarded = sum(reasons.values())
+    payload = stats_header("generate_families", options, crashed, STATS_PARAMETERS)
+    payload["families"] = {
+        "input": len(converged) + discarded,
+        "successful": len(converged),
+        "discarded": discarded,
+        "converged": sum(converged),
+        "crashed": crashed,
+    }
+    payload["discard_reasons"] = dict(sorted(reasons.items()))
+    payload["histograms"] = metadata_histograms(root / f"{chunk}_metadata.csv")
+    return payload
+
+
+def write_stats(path: Path, payload: Mapping[str, object]) -> None:
+    """Commit the stats file atomically, or leave none at all.
+
+    Its presence is the signal that the directory holds a completed run, so a partial file
+    must never appear under the final name. The temporary file is opened exclusively (`"x"`)
+    under a random name, so it cannot alias an input. It is created through the umask like
+    every other output; `mkstemp` would force mode 0600 onto the final file.
+    """
+    temporary = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
+    created = False
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            created = True
+            handle.write(json.dumps(payload, indent=2, allow_nan=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except Exception as error:
+        # Best effort, and never allowed to replace the error that matters.
+        if created:
+            with contextlib.suppress(OSError):
+                temporary.unlink(missing_ok=True)
+        raise ChunkCorrupted(f"stats commit failed for {path.name}") from error
 
 
 def configure_logger(path: Path) -> logging.Logger:
@@ -1268,6 +1384,8 @@ def main(args: SequenceCollection[str] | None = None) -> None:
         options.batch_size = 2 * options.cpus
 
     root = options.output_dir
+    stats_path = root / f"{options.chunk_id}_stats.json"
+    guard_stats_path(stats_path, (options.clusters_chunk, options.fasta_file, options.fasta_index))
     prepare_output_directories(root, options.chunk_id)
     index_path = resolve_index(options, root)
     logger = configure_logger(root / f"{options.chunk_id}.log")
@@ -1431,6 +1549,8 @@ def main(args: SequenceCollection[str] | None = None) -> None:
             crashed,
             time.monotonic() - started,
         )
+        # Last, and only on the completed path: its presence means the output is consumable.
+        write_stats(stats_path, generate_stats(root, options, crashed))
         if crashed:
             raise SystemExit(EXIT_CRASHED_FAMILIES)
     except ChunkCorrupted:

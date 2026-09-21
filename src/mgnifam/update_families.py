@@ -32,8 +32,11 @@ Three things shape this module, and each was a decision rather than an accident:
 
 import argparse
 import contextlib
+import csv
 import itertools
+import math
 import time
+from collections import Counter
 from collections.abc import Sequence as SequenceCollection
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +52,7 @@ from mgnifam.generate_families import (
     INTERNAL_ERROR_PREFIX,
     MAX_ROUNDS,
     METADATA_HEADER,
+    STATS_PARAMETERS,
     ChunkCorrupted,
     Family,
     FamilyState,
@@ -60,11 +64,15 @@ from mgnifam.generate_families import (
     extract_records,
     family_guard,
     filter_hits,
+    histogram,
     is_gzipped,
+    metadata_histograms,
     resolve_index,
     run_hmmbuild,
     search,
+    stats_header,
     unmask_sequence_names,
+    write_stats,
 )
 
 DELTA_HEADER = (
@@ -185,8 +193,10 @@ def validate_inputs(options: argparse.Namespace) -> list[tuple[str, pyhmmer.plan
     ):
         if not 0 <= getattr(options, name) <= 1:
             raise ValueError(f"{name} must be in [0, 1]")
-    if options.recruit_evalue_cutoff <= 0:
-        raise ValueError("recruit_evalue_cutoff must be positive")
+    # Written as a comparison chain so NaN fails it too. Infinity would also reach the stats
+    # file as a non-standard JSON token.
+    if not 0 < options.recruit_evalue_cutoff < math.inf:
+        raise ValueError("recruit_evalue_cutoff must be positive and finite")
     if options.max_seed_seqs < 1:
         raise ValueError("max_seed_seqs must be at least 1")
     if options.discard_min_rep_length < 1 or options.discard_max_rep_length < 1:
@@ -252,6 +262,7 @@ def validate_output_paths(options: argparse.Namespace, names: set[str]) -> None:
             "converged.txt",
             "reps.fasta.gz",
             "delta.csv",
+            "stats.json",
         )
     )
     destinations.append(root / f"{prefix}.log")
@@ -264,7 +275,9 @@ def validate_output_paths(options: argparse.Namespace, names: set[str]) -> None:
             raise ValueError(f"output path {path} overlaps an input file")
 
 
-def prepare_output_directories(root: Path, names: SequenceCollection[str]) -> None:
+def prepare_output_directories(
+    root: Path, names: SequenceCollection[str], stats_path: Path
+) -> None:
     """Refuse foreign families, then clear the input families' previous artifacts.
 
     Call only after input/output collision validation. The input names identify exactly
@@ -275,6 +288,9 @@ def prepare_output_directories(root: Path, names: SequenceCollection[str]) -> No
     A smaller input set over a larger output set remains an error: nothing identifies
     the omitted families as ours to remove. Check the entire tree before deleting any
     accepted paths. A cleanup error propagates and aborts before aggregates are opened.
+
+    The stats file is the first thing removed, after the refusal: it marks a completed run,
+    and a refused retry has changed nothing, so the old one still describes the directory.
     """
     owned = set(names)
     strays = sorted(
@@ -289,6 +305,7 @@ def prepare_output_directories(root: Path, names: SequenceCollection[str]) -> No
             f"{root} already holds artifacts for families this run does not update "
             f"({listed}). Use a fresh output_dir, or remove them first."
         )
+    stats_path.unlink(missing_ok=True)
     for directory in FAMILY_DIRECTORIES:
         (root / directory).mkdir(parents=True, exist_ok=True)
     for directory, suffix in ARTIFACT_SUFFIXES.items():
@@ -384,6 +401,39 @@ def recruit_only(
     delta.round1_recruits = len(filtered_sequences)
 
 
+def update_stats(root: Path, options: argparse.Namespace, crashed: int) -> dict[str, object]:
+    """Summarise a completed update by reading its delta and metadata CSVs back.
+
+    `converged` counts successful families only: `discard` keeps `ever_converged`, so a
+    family that converged and then failed `finish` still says `True` in its delta row.
+    """
+    prefix = f"{options.chunk_id}_updated"
+    with (root / f"{prefix}_delta.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    successful = [row for row in rows if row["outcome"] == "successful"]
+    reasons = Counter(row["outcome"] for row in rows if row["outcome"] != "successful")
+    payload = stats_header("update_families", options, crashed, (*STATS_PARAMETERS, "skip_refine"))
+    payload["families"] = {
+        "input": len(rows),
+        "successful": len(successful),
+        "discarded": len(rows) - len(successful),
+        "converged": sum(row["converged"] == "True" for row in successful),
+        "crashed": crashed,
+    }
+    payload["discard_reasons"] = dict(sorted(reasons.items()))
+    histograms = metadata_histograms(root / f"{prefix}_metadata.csv")
+    # Delta fields are empty for a family that never reached the stage producing them.
+    histograms["model_length_change"] = histogram(
+        str(int(row["model_length_after"]) - int(row["model_length_before"]))
+        for row in rows
+        if row["model_length_after"]
+    )
+    histograms["rounds_run"] = histogram(row["rounds_run"] for row in rows if row["rounds_run"])
+    histograms["retention"] = histogram(row["retention"] for row in rows if row["retention"])
+    payload["histograms"] = histograms
+    return payload
+
+
 def main(args: SequenceCollection[str] | None = None) -> None:
     options = parse_args(args)
     models = validate_inputs(options)
@@ -391,7 +441,8 @@ def main(args: SequenceCollection[str] | None = None) -> None:
         options.batch_size = 2 * options.cpus
 
     root = options.output_dir
-    prepare_output_directories(root, [name for name, _ in models])
+    stats_path = root / f"{options.chunk_id}_updated_stats.json"
+    prepare_output_directories(root, [name for name, _ in models], stats_path)
     index_path = resolve_index(options, root)
     logger = configure_logger(root / f"{options.chunk_id}_updated.log")
 
@@ -573,6 +624,8 @@ def main(args: SequenceCollection[str] | None = None) -> None:
             crashed,
             time.monotonic() - started,
         )
+        # Last, and only on the completed path: its presence means the output is consumable.
+        write_stats(stats_path, update_stats(root, options, crashed))
         if crashed:
             raise SystemExit(EXIT_CRASHED_FAMILIES)
     except ChunkCorrupted:
