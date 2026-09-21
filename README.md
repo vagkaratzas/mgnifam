@@ -220,7 +220,7 @@ artifact paths and into CSV fields, and it arrives from a file this tool did not
 Per-family artifacts land in the same `hmm/`, `full_msa/`, `seed_msa/` and `rf/`
 directories, named by family. Aggregates are `<chunk>_updated_*`: `families.tsv`,
 `metadata.csv`, `discarded.csv`, `successful.txt`, `converged.txt`, `reps.fasta.gz`,
-`delta.csv`, and `<chunk>_updated.log`.
+`delta.csv`, `stats.json` (see [MultiQC](#multiqc)), and `<chunk>_updated.log`.
 
 `<chunk>_updated_delta.csv` is what an update run is *for* — one row per family, whether it
 survived or not:
@@ -335,6 +335,12 @@ consumable run**; exit `1` leaves none. It records only the flags that change re
 it is byte-identical across `--cpus`, `--batch_size` and `--prefetch_targets` like the
 other outputs. `"tool": "mgnifam"` is its first key, and `schema_version` changes only
 when its shape does.
+
+`update_families` writes the same summary as `<chunk>_updated_stats.json`, read back from
+its delta and metadata CSVs. It adds `skip_refine` to the recorded flags and three
+histograms: `model_length_change` (after minus before), `rounds_run` and `retention`.
+Retention keys are the exact `delta.csv` values, and a family with no retention is left
+out. In both files `converged` counts successful families only.
 
 ## Why this is fast now
 

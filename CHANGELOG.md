@@ -19,7 +19,8 @@ resolution may change results.
 
 - **MultiQC summary.** A completed `generate_families` run writes `<chunk>_stats.json`:
   family counts, discard reasons, and histograms of full-MSA size, model length and
-  representative length. It is present only after a completed run (exit `0` or `3`), and
+  representative length. `update_families` writes `<chunk>_updated_stats.json` with the
+  same fields plus model-length change, rounds run and retention. It is present only after a completed run (exit `0` or `3`), and
   byte-reproducible like the other outputs.
 
 ## [3.0.0] - 2026/09/16
