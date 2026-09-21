@@ -249,3 +249,36 @@ During the build the user enabled Zenodo and asked for `CITATION.cff` plus a Zen
 badge. `PLAN_MULTIQC.md` gained a "Citation and Zenodo" section, and `CITATION.cff` left the
 non-goals. This change is outside the round-5 approval (SHA `215f5d3f...`) and will be covered
 by the final Codex inspection of the built diff.
+
+## Final inspections: Codex gpt-5.6-luna xhigh, fresh sessions, one per repository
+
+- All three ran against the pre-build commits: mgnifam `9f31bba`, MultiQC `deca1b79`, test-data `8aa7630`.
+- All three returned REVISE with runner status `failed` ("Code changed during inspection"). The host committed the user-requested `v3.1.0` bump while they ran. The findings were arbitrated anyway.
+- No re-inspection, at the user's instruction. The fixes below are therefore unreviewed by Codex.
+
+### mgnifam
+
+| ID | Severity | Disposition |
+|---|---|---|
+| F001 | medium | **Rejected (user decision).** The user removed the PLAN_MULTIQC exclusions from the sdist on purpose, and these files will be deleted after the work completes. If 3.1.0 is released first, they ship in its sdist. |
+| F002 | medium | **Accepted.** `mkstemp` forced mode 0600 on the stats file. It now uses an exclusive `"x"` open under a random name, so the umask applies like every other output. Test: the stats file mode equals the metadata CSV mode. |
+| F003 | low | **Accepted.** Temp cleanup is best-effort under `contextlib.suppress(OSError)`, only for a file this call created, and `ChunkCorrupted` is always raised. |
+| F004 | low | **Accepted.** `--recruit_evalue_cutoff` must be finite in both commands (`inf`/`nan` rejected in validation), and the JSON is dumped with `allow_nan=False`. |
+
+### MultiQC module
+
+| ID | Severity | Disposition |
+|---|---|---|
+| MQC-001 | high | **Deferred (planned).** `doi=None` stays until Zenodo mints the DOI at release. |
+| MQC-002 | medium | **Rejected.** Update-only sections are selected by the JSON `command` field, as planned. The shared outcome and size sections intentionally compare distinctly named generate and update samples in one plot. |
+| MQC-003 | medium | **Accepted.** Retention is binned into twentieths for display; the raw data stays exact. Test added. |
+| MQC-004 | medium | **Accepted.** Invalid JSON and a missing or unsupported `schema_version` are warned about and skipped. Test added. |
+| MQC-005 | low | **Accepted.** Added to `module_order` after `mgikit`, although recent modules (riker, seqkit) were merged without an entry. |
+| MQC-006 | medium | **Fixed**, as for test-data MQC-002. |
+
+### test-data
+
+| ID | Severity | Disposition |
+|---|---|---|
+| MQC-001 | high | **Partly accepted.** The default-flag v2 run was intentional, but it is regenerated with `--discard_min_rep_length 100` (14/12/2/8) so the generate sample shows discards. |
+| MQC-002 | medium | **Accepted.** All three files are regenerated from the 3.1.0 build. |

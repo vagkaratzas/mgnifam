@@ -25,6 +25,11 @@ resolution may change results.
 - **Citation metadata.** `CITATION.cff` describes how to cite mgnifam. Releases are
   archived on Zenodo, and the README links the latest DOI.
 
+### Changed
+
+- `--recruit_evalue_cutoff` must now be finite as well as positive. `inf` and `nan` are
+  rejected before any output is written.
+
 ## [3.0.0] - 2026/09/16
 
 A major version because three documented behaviours change: `--chunk_num` is removed in

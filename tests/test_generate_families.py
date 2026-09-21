@@ -1445,6 +1445,8 @@ def test_extracted_records_do_not_retain_pyhmmer_results(
         ({"cpus": 0}, "cpus"),
         ({"max_gap_occupancy": 1.1}, "max_gap_occupancy"),
         ({"discard_min_rep_length": 3000}, "minimum"),
+        ({"recruit_evalue_cutoff": float("inf")}, "finite"),
+        ({"recruit_evalue_cutoff": float("nan")}, "finite"),
     ],
 )
 def test_validation_precedes_output_creation(
@@ -1706,6 +1708,9 @@ def test_stats_file_matches_aggregates(v2_output: Path) -> None:
     """The MultiQC summary is a projection of the chunk's own CSVs, nothing more."""
     stats = json.loads((v2_output / "v2_stats.json").read_text())
     assert next(iter(stats)) == "tool"
+    # Readable by whoever can read the CSVs beside it: the umask applies, not a forced 0600.
+    mode = (v2_output / "v2_stats.json").stat().st_mode
+    assert mode == (v2_output / "v2_metadata.csv").stat().st_mode
     assert {key: stats[key] for key in ("tool", "schema_version", "version", "command")} == {
         "tool": "mgnifam",
         "schema_version": gf.STATS_SCHEMA_VERSION,

@@ -34,6 +34,7 @@ import argparse
 import contextlib
 import csv
 import itertools
+import math
 import time
 from collections import Counter
 from collections.abc import Sequence as SequenceCollection
@@ -192,8 +193,10 @@ def validate_inputs(options: argparse.Namespace) -> list[tuple[str, pyhmmer.plan
     ):
         if not 0 <= getattr(options, name) <= 1:
             raise ValueError(f"{name} must be in [0, 1]")
-    if options.recruit_evalue_cutoff <= 0:
-        raise ValueError("recruit_evalue_cutoff must be positive")
+    # Written as a comparison chain so NaN fails it too. Infinity would also reach the stats
+    # file as a non-standard JSON token.
+    if not 0 < options.recruit_evalue_cutoff < math.inf:
+        raise ValueError("recruit_evalue_cutoff must be positive and finite")
     if options.max_seed_seqs < 1:
         raise ValueError("max_seed_seqs must be at least 1")
     if options.discard_min_rep_length < 1 or options.discard_max_rep_length < 1:

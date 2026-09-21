@@ -39,8 +39,10 @@ import io
 import itertools
 import json
 import logging
+import math
 import os
 import re
+import secrets
 import shutil
 import tempfile
 import threading
@@ -1198,8 +1200,10 @@ def validate_inputs(options: argparse.Namespace) -> dict[str, list[str]]:
     ):
         if not 0 <= getattr(options, name) <= 1:
             raise ValueError(f"{name} must be in [0, 1]")
-    if options.recruit_evalue_cutoff <= 0:
-        raise ValueError("recruit_evalue_cutoff must be positive")
+    # Written as a comparison chain so NaN fails it too. Infinity would also reach the stats
+    # file as a non-standard JSON token.
+    if not 0 < options.recruit_evalue_cutoff < math.inf:
+        raise ValueError("recruit_evalue_cutoff must be positive and finite")
     if options.max_seed_seqs < 1:
         raise ValueError("max_seed_seqs must be at least 1")
     if options.discard_min_rep_length < 1 or options.discard_max_rep_length < 1:
@@ -1298,22 +1302,24 @@ def write_stats(path: Path, payload: Mapping[str, object]) -> None:
     """Commit the stats file atomically, or leave none at all.
 
     Its presence is the signal that the directory holds a completed run, so a partial file
-    must never appear under the final name. The temporary file is created exclusively under
-    a random name, so it cannot alias an input either.
+    must never appear under the final name. The temporary file is opened exclusively (`"x"`)
+    under a random name, so it cannot alias an input. It is created through the umask like
+    every other output; `mkstemp` would force mode 0600 onto the final file.
     """
-    temporary = None
+    temporary = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
+    created = False
     try:
-        descriptor, temporary = tempfile.mkstemp(
-            dir=path.parent, prefix=f"{path.name}.", suffix=".tmp"
-        )
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, indent=2) + "\n")
+        with temporary.open("x", encoding="utf-8") as handle:
+            created = True
+            handle.write(json.dumps(payload, indent=2, allow_nan=False) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
     except Exception as error:
-        if temporary is not None:
-            Path(temporary).unlink(missing_ok=True)
+        # Best effort, and never allowed to replace the error that matters.
+        if created:
+            with contextlib.suppress(OSError):
+                temporary.unlink(missing_ok=True)
         raise ChunkCorrupted(f"stats commit failed for {path.name}") from error
 
 
