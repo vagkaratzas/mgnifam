@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use mgnifam, please cite it using the metadata below."
+type: software
+title: mgnifam
+abstract: >-
+  Iterative HMM-based protein family generation over very large sequence databases.
+  Builds protein families from sequence clusters by iterative HMM search, and
+  refreshes existing family models against newer sequence databases.
+authors:
+  - family-names: Karatzas
+    given-names: Evangelos
+    email: vagkaratzas1990@gmail.com
+repository-code: "https://github.com/vagkaratzas/mgnifam"
+url: "https://pypi.org/project/mgnifam/"
+license: MIT
+keywords:
+  - bioinformatics
+  - protein-families
+  - hmm
+  - hmmer
+  - msa
+  - metagenomics

@@ -56,6 +56,25 @@ generated/discarded split; an internal crash is recorded as a discard so the chu
 finish, then also fails the completed run with exit 3. Exit 1 means containment could not
 leave coherent output, so that output must not be consumed.
 
+## The stats file
+
+`<chunk>_stats.json` and `<chunk>_updated_stats.json` are parsed by a MultiQC module that lives in another repository, so
+its shape is a contract: bump `STATS_SCHEMA_VERSION` on any breaking change. Four rules:
+
+- **Derived, never counted.** It is built by reading the chunk's closed aggregate CSVs
+  back, after the writer `ExitStack` exits. Do not thread counters through `emit_family`
+  or `Family`; that would put new state across the containment boundaries above.
+  `update_families` reads its delta CSV, and its stats path sits in
+  `validate_output_paths` like every other aggregate.
+- **Present means complete.** It is removed as the first mutation of the output tree and
+  written last, through an exclusive temp file and `os.replace`. A failed commit raises
+  `ChunkCorrupted`. Guard: `test_failed_stats_commit_exits_one_and_leaves_no_stats`.
+- **Scientific flags only.** `STATS_PARAMETERS` excludes paths, `--cpus`, `--batch_size`
+  and `--prefetch_targets`; adding one breaks the reproducibility tests.
+- **`converged` counts successful families only.** `discard()` keeps `ever_converged`,
+  so an update delta row can say `True` on a discard. Guard:
+  `test_a_converged_then_discarded_family_is_not_counted_as_converged`.
+
 ## Deliberate differences from the legacy script
 
 The legacy oracle records the starting behaviour, not every current guarantee.

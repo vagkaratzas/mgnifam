@@ -6,9 +6,11 @@ from, and `extra_fasta` is the "new release" that set is then updated against.
 
 import csv
 import gzip
+import json
 import os
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -418,6 +420,14 @@ def test_a_family_with_no_hits_is_reported_distinctly_from_a_low_complexity_one(
     assert len(discarded) == len(rows)
     assert (output / "9_updated_successful.txt").read_text() == ""
 
+    # The model was searched once and is unchanged, so the delta-derived maps are not
+    # empty; only what a successful family would have produced is.
+    histograms = json.loads((output / "9_updated_stats.json").read_text())["histograms"]
+    assert histograms["model_length_change"] == {"0": len(rows)}
+    assert histograms["rounds_run"] == {"1": len(rows)}
+    for name in ("retention", "full_msa_size", "model_length", "representative_length"):
+        assert histograms[name] == {}
+
 
 def test_every_discard_produces_exactly_one_delta_row(
     tmp_path: Path, generated: Path, extra_fasta: Path, monkeypatch: pytest.MonkeyPatch
@@ -444,6 +454,11 @@ def test_every_discard_produces_exactly_one_delta_row(
     ids = [row["family_id"] for row in rows]
     assert len(ids) == len(set(ids)) == len(family_names(generated))
     assert sum(1 for row in rows if row["outcome"].startswith("internal error")) == 1
+    stats = json.loads((output / "9_updated_stats.json").read_text())
+    assert (stats["exit_status"], stats["families"]["crashed"]) == (
+        generate_families.EXIT_CRASHED_FAMILIES,
+        1,
+    )
 
 
 def test_a_delta_failure_after_a_discard_append_is_fatal_and_not_re_emitted(
@@ -460,10 +475,14 @@ def test_a_delta_failure_after_a_discard_append_is_fatal_and_not_re_emitted(
         raise OSError("no space left on device")
 
     monkeypatch.setattr(generate_families, "write_delta", refuse)
+    stale = tmp_path / "out" / "9_updated_stats.json"
+    stale.parent.mkdir()
+    stale.write_text("{}\n")
 
     with pytest.raises(SystemExit) as exit_info:
         update(generated / "hmm", small_fasta, tmp_path / "out", "--skip_refine")
     assert exit_info.value.code == 1
+    assert not stale.exists()
 
     discarded = (tmp_path / "out" / "9_updated_discarded.csv").read_text().splitlines()[1:]
     assert len(discarded) == 1, "the discard row was written twice by the re-emit"
@@ -554,6 +573,7 @@ def test_a_directory_holding_another_runs_families_is_refused(
     names = family_names(generated)
     assert len(names) >= 2
     update(generated / "hmm", extra_fasta, output, "--skip_refine")
+    stats_before = (output / "9_updated_stats.json").read_bytes()
 
     subset = tmp_path / "subset"
     subset.mkdir()
@@ -565,6 +585,7 @@ def test_a_directory_holding_another_runs_families_is_refused(
         update(subset, extra_fasta, output, "--skip_refine")
     # Refusing must not have half-cleared the directory it refused to write into.
     assert family_names(output) == names
+    assert (output / "9_updated_stats.json").read_bytes() == stats_before
 
 
 def test_a_partial_run_can_be_rerun_in_place(
@@ -631,14 +652,20 @@ def test_input_models_cannot_be_overwritten(
     assert not (output / "9_updated.log").exists()
 
 
+@pytest.mark.parametrize("aggregate", ["9_updated_reps.fasta.gz", "9_updated_stats.json"])
 def test_input_library_cannot_alias_an_aggregate(
-    tmp_path: Path, generated: Path, small_fasta: Path
+    tmp_path: Path, generated: Path, small_fasta: Path, aggregate: str
 ) -> None:
     output = tmp_path / "out"
     output.mkdir()
-    source = write_library(
-        [read_hmm(next((generated / "hmm").iterdir()))], output / "9_updated_reps.fasta.gz"
-    )
+    model = read_hmm(next((generated / "hmm").iterdir()))
+    source = output / aggregate
+    if aggregate.endswith(".gz"):
+        write_library([model], source)
+    else:
+        # HMMER picks decompression from the suffix, so a plain name needs a plain model.
+        with source.open("wb") as handle:
+            model.write(handle)
     before = source.read_bytes()
     with pytest.raises(ValueError, match="overlaps an input"):
         update(source, small_fasta, output, "--skip_refine")
@@ -683,3 +710,67 @@ def test_cli_dispatches_to_update_families(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setitem(cli.COMMANDS, "update_families", lambda argv: seen.append(list(argv)))
     cli.main(["update_families", "-i", "models", "-f", "db.fa"])
     assert seen == [["-i", "models", "-f", "db.fa"]]
+
+
+def histogram_of(values: object) -> dict[str, int]:
+    return {str(value): count for value, count in Counter(values).items()}  # type: ignore[call-overload]
+
+
+@pytest.mark.parametrize("skip_refine", [True, False])
+def test_stats_file_matches_aggregates(
+    tmp_path: Path, fixture_directory: Path, v2_fasta: Path, skip_refine: bool
+) -> None:
+    """Refine discards `v2_4`; `--skip_refine` keeps all 14. Both project their CSVs."""
+    extra = ("--skip_refine",) if skip_refine else ()
+    output = update(fixture_directory / "mgnifams_v2.hmm.lib.gz", v2_fasta, tmp_path, *extra)
+
+    stats = json.loads((output / "9_updated_stats.json").read_text())
+    assert (stats["command"], stats["chunk_id"], stats["exit_status"]) == (
+        "update_families",
+        "9",
+        0,
+    )
+    assert list(stats["parameters"]) == [*generate_families.STATS_PARAMETERS, "skip_refine"]
+    assert stats["parameters"]["skip_refine"] is skip_refine
+
+    with (output / "9_updated_delta.csv").open(newline="") as handle:
+        delta = list(csv.DictReader(handle))
+    with (output / "9_updated_metadata.csv").open(newline="") as handle:
+        metadata = list(csv.DictReader(handle))
+    successful = [row for row in delta if row["outcome"] == "successful"]
+    assert stats["families"] == {
+        "input": 14,
+        "successful": len(successful),
+        "discarded": 14 - len(successful),
+        "converged": sum(row["converged"] == "True" for row in successful),
+        "crashed": 0,
+    }
+    assert len(successful) == (14 if skip_refine else 13)
+    assert stats["discard_reasons"] == dict(
+        Counter(row["outcome"] for row in delta if row["outcome"] != "successful")
+    )
+    assert stats["histograms"] == {
+        "full_msa_size": histogram_of(int(row["full_msa_size"]) for row in metadata),
+        "model_length": histogram_of(len(row["consensus"]) for row in metadata),
+        "representative_length": histogram_of(int(row["length"]) for row in metadata),
+        "model_length_change": histogram_of(
+            int(row["model_length_after"]) - int(row["model_length_before"]) for row in delta
+        ),
+        "rounds_run": histogram_of(int(row["rounds_run"]) for row in delta),
+        "retention": histogram_of(row["retention"] for row in delta if row["retention"]),
+    }
+
+
+def test_a_converged_then_discarded_family_is_not_counted_as_converged(tmp_path: Path) -> None:
+    """`discard` keeps `ever_converged`, so the raw delta column overcounts."""
+    (tmp_path / "9_updated_delta.csv").write_text(
+        update_families.DELTA_HEADER
+        + "a,100,100,5,,0.5,2,True,few seed sequences remained\n"
+        + "b,100,98,5,6,1.0,2,True,successful\n"
+        + "c,100,100,5,6,1.0,3,False,successful\n"
+    )
+    (tmp_path / "9_updated_metadata.csv").write_text(generate_families.METADATA_HEADER)
+    options = update_families.parse_args(["-i", "unused", "-f", "unused", "-n", "9"])
+
+    families = update_families.update_stats(tmp_path, options, 0)["families"]
+    assert (families["successful"], families["discarded"], families["converged"]) == (2, 1, 1)
