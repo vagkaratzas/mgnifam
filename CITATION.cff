@@ -10,6 +10,7 @@ authors:
   - family-names: Karatzas
     given-names: Evangelos
     email: vagkaratzas1990@gmail.com
+doi: 10.5281/zenodo.22879938
 repository-code: "https://github.com/vagkaratzas/mgnifam"
 url: "https://pypi.org/project/mgnifam/"
 license: MIT
