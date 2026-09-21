@@ -20,8 +20,10 @@ resolution may change results.
 - **MultiQC summary.** A completed `generate_families` run writes `<chunk>_stats.json`:
   family counts, discard reasons, and histograms of full-MSA size, model length and
   representative length. `update_families` writes `<chunk>_updated_stats.json` with the
-  same fields plus model-length change, rounds run and retention. It is present only after a completed run (exit `0` or `3`), and
-  byte-reproducible like the other outputs.
+  same fields plus model-length change, rounds run and retention. The file is present only
+  after a completed run (exit `0` or `3`), and byte-reproducible like the other outputs.
+- **Citation metadata.** `CITATION.cff` describes how to cite mgnifam. Releases are
+  archived on Zenodo, and the README links the latest DOI.
 
 ## [3.0.0] - 2026/09/16
 

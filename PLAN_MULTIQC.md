@@ -278,6 +278,27 @@ of the checked-out version:
 3. Open the test-data PR.
 4. Open the MultiQC PR with the `module: new` label.
 
+## Citation and Zenodo (added by the user during the build; not part of the Codex-approved plan)
+
+The user enabled the Zenodo-GitHub integration for `vagkaratzas/mgnifam`, so the next
+GitHub release is archived and gets a DOI.
+- **`CITATION.cff`** at the repo root (CFF 1.2.0, `type: software`) with title, author,
+  abstract, license, repository URL and keywords. Zenodo reads it when archiving the
+  release, and GitHub renders a "Cite this repository" button from it.
+  - It has no `version`, because `pyproject.toml` is the single source of the version
+    (AGENTS.md) and Zenodo takes the version from the release tag.
+  - It has no `doi` until the first archive mints one.
+- **README Zenodo badge** next to the PyPI and Bioconda badges. It uses Zenodo's
+  repository-id badge (`https://zenodo.org/badge/1296385054.svg`, linking to
+  `https://zenodo.org/badge/latestdoi/1296385054`). That form resolves to the latest DOI
+  without being edited per release, and it starts rendering once the first release is
+  archived.
+- **After the release (user):** add the concept DOI to `CITATION.cff` (`doi:`) and to the
+  MultiQC module (`doi=`), then regenerate the MultiQC test data so it carries the released
+  version.
+- Verify with `cffconvert --validate` if it is available. Otherwise validate the YAML and
+  check it against the CFF 1.2.0 schema fields.
+
 ## Non-goals
 
 - **`_mqc` custom-content files.** They would duplicate sections once the native module is
@@ -289,8 +310,8 @@ of the checked-out version:
   AGENTS.md forbids.
 - **Parsing `.log` files**, which carry timestamps, or the per-family CSVs directly
   (large, several files per sample, no completion or version signal).
-- **`CITATION.cff` / `.zenodo.json`.** Zenodo works without them. Add them only if the
-  user wants rich citation metadata.
+- **`.zenodo.json`.** Zenodo reads `CITATION.cff` (now in scope, see below), so a second
+  metadata file would only drift from it.
 - **A version bump or release.** Those are the user's call. The CHANGELOG entry goes under
   Unreleased.
 

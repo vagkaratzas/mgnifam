@@ -242,3 +242,10 @@ None.
 ## Approval check
 
 `runner.py check` against the round-5 result: "Approval matches the current plan." (SHA256 `215f5d3f242ac44bf1272352fd9d9511d00e72e91ca466c44ba75c7c0a7869b3`). `PLAN_MULTIQC.md` is a byte-identical copy of the approved plan.
+
+## Post-approval plan change (user-directed, not reviewed by Codex)
+
+During the build the user enabled Zenodo and asked for `CITATION.cff` plus a Zenodo README
+badge. `PLAN_MULTIQC.md` gained a "Citation and Zenodo" section, and `CITATION.cff` left the
+non-goals. This change is outside the round-5 approval (SHA `215f5d3f...`) and will be covered
+by the final Codex inspection of the built diff.
