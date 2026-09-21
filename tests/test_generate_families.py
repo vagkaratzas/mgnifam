@@ -21,10 +21,12 @@ import csv
 import gc
 import gzip
 import io
+import json
 import logging
 import os
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1146,6 +1148,8 @@ def test_console_script_returns_three_after_a_contained_family_crash(
     assert result.returncode == gf.EXIT_CRASHED_FAMILIES
     output = run_directory / "output"
     assert "crashed=1" in (output / "chunk.log").read_text()
+    stats = json.loads((output / "chunk_stats.json").read_text())
+    assert (stats["exit_status"], stats["families"]["crashed"]) == (gf.EXIT_CRASHED_FAMILIES, 1)
     successful = (output / "chunk_successful.txt").read_text().splitlines()
     discarded = csv_rows(output / "chunk_discarded.csv", gf.DISCARDED_HEADER)
     assert len(successful) + len(discarded) == len(
@@ -1205,6 +1209,9 @@ def test_shared_append_failure_is_fatal_not_a_contained_discard(
 
     monkeypatch.setattr(gf, "emit_family", fail_after_converged_append)
     run_directory = tmp_path / "corrupt"
+    # A previous run's summary must not outlive the output it described.
+    (run_directory / "output").mkdir(parents=True)
+    (run_directory / "output" / "chunk_stats.json").write_text("{}\n")
     with pytest.raises(SystemExit) as excinfo:
         run_pipeline(
             run_directory,
@@ -1217,6 +1224,7 @@ def test_shared_append_failure_is_fatal_not_a_contained_discard(
     discarded = csv_rows(output / "chunk_discarded.csv", gf.DISCARDED_HEADER)
     assert all(gf.INTERNAL_ERROR_PREFIX not in row for row in discarded)
     assert "chunk output is corrupted" in (output / "chunk.log").read_text()
+    assert not (output / "chunk_stats.json").exists()
 
 
 def test_family_guard_contains_only_exceptions() -> None:
@@ -1688,3 +1696,98 @@ def test_clip_ends_is_identity_when_every_column_passes() -> None:
         ],
     )
     assert list(gf.clip_ends(msa, 0.5).alignment) == rows
+
+
+def histogram_of(values: object) -> dict[str, int]:
+    return {str(value): count for value, count in Counter(values).items()}  # type: ignore[call-overload]
+
+
+def test_stats_file_matches_aggregates(v2_output: Path) -> None:
+    """The MultiQC summary is a projection of the chunk's own CSVs, nothing more."""
+    stats = json.loads((v2_output / "v2_stats.json").read_text())
+    assert next(iter(stats)) == "tool"
+    assert {key: stats[key] for key in ("tool", "schema_version", "version", "command")} == {
+        "tool": "mgnifam",
+        "schema_version": gf.STATS_SCHEMA_VERSION,
+        "version": __version__,
+        "command": "generate_families",
+    }
+    assert (stats["chunk_id"], stats["exit_status"]) == ("v2", 0)
+    # Only result-changing flags: cpus, batch size, prefetch and paths would break the
+    # byte-reproducibility the other tests hold this file to.
+    assert list(stats["parameters"]) == list(gf.STATS_PARAMETERS)
+    assert stats["parameters"]["discard_min_rep_length"] == 100
+
+    with (v2_output / "v2_metadata.csv").open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    with (v2_output / "v2_discarded.csv").open(newline="") as handle:
+        reasons = [row["reason"] for row in csv.DictReader(handle)]
+    assert stats["families"] == {
+        "input": 14,
+        "successful": 12,
+        "discarded": 2,
+        "converged": 8,
+        "crashed": 0,
+    }
+    assert stats["discard_reasons"] == dict(Counter(reasons))
+    assert stats["histograms"] == {
+        "full_msa_size": histogram_of(int(row["full_msa_size"]) for row in rows),
+        "model_length": histogram_of(len(row["consensus"]) for row in rows),
+        "representative_length": histogram_of(int(row["length"]) for row in rows),
+    }
+    for counts in stats["histograms"].values():
+        assert list(counts) == sorted(counts, key=int)
+
+
+def test_empty_chunk_writes_an_all_zero_summary(
+    tmp_path: Path, small_fasta: Path, shared_index: Path
+) -> None:
+    clusters = tmp_path / "empty.tsv"
+    clusters.write_text("")
+    output = run_pipeline(
+        tmp_path / "run", cli_args(clusters, small_fasta, fasta_index=shared_index)
+    )
+
+    stats = json.loads((output / "chunk_stats.json").read_text())
+    assert set(stats["families"].values()) == {0}
+    assert stats["discard_reasons"] == {}
+    assert all(counts == {} for counts in stats["histograms"].values())
+
+
+def test_stats_path_cannot_overwrite_an_input(
+    tmp_path: Path, fixture_directory: Path, small_fasta: Path, shared_index: Path
+) -> None:
+    clusters = tmp_path / "output" / "chunk_stats.json"
+    clusters.parent.mkdir()
+    clusters.write_bytes((fixture_directory / "clustering.tsv").read_bytes())
+    before = clusters.read_bytes()
+
+    with contextlib.chdir(tmp_path), pytest.raises(ValueError, match="overlaps an input"):
+        gf.main(cli_args(Path("output/chunk_stats.json"), small_fasta, fasta_index=shared_index))
+    assert clusters.read_bytes() == before
+
+
+def test_failed_stats_commit_exits_one_and_leaves_no_stats(
+    tmp_path: Path,
+    fixture_directory: Path,
+    small_fasta: Path,
+    shared_index: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An explicit index, so the SSI build's own `os.replace` is never what fails here.
+    def refuse(*_: object) -> None:
+        raise OSError("synthetic replace failure")
+
+    monkeypatch.setattr(gf.os, "replace", refuse)
+    run_directory = tmp_path / "stats-failure"
+    with pytest.raises(SystemExit) as excinfo:
+        run_pipeline(
+            run_directory,
+            cli_args(fixture_directory / "clustering.tsv", small_fasta, fasta_index=shared_index),
+        )
+
+    assert excinfo.value.code == 1
+    output = run_directory / "output"
+    assert not (output / "chunk_stats.json").exists()
+    assert not list(output.glob("*.tmp"))
+    assert "stats commit failed" in (output / "chunk.log").read_text()

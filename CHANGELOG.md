@@ -13,6 +13,15 @@ dependency versions pinned in `uv.lock` (`uv sync --frozen`). Installing from Py
 pyhmmer, pyfamsa and pytrimal within their declared ranges instead, and a different
 resolution may change results.
 
+## [Unreleased]
+
+### Added
+
+- **MultiQC summary.** A completed `generate_families` run writes `<chunk>_stats.json`:
+  family counts, discard reasons, and histograms of full-MSA size, model length and
+  representative length. It is present only after a completed run (exit `0` or `3`), and
+  byte-reproducible like the other outputs.
+
 ## [3.0.0] - 2026/09/16
 
 A major version because three documented behaviours change: `--chunk_num` is removed in
