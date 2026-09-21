@@ -13,7 +13,7 @@ dependency versions pinned in `uv.lock` (`uv sync --frozen`). Installing from Py
 pyhmmer, pyfamsa and pytrimal within their declared ranges instead, and a different
 resolution may change results.
 
-## [Unreleased]
+## [3.1.0] - 2026/09/21
 
 ### Added
 
