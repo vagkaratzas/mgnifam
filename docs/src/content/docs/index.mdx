@@ -3,10 +3,11 @@ title: mgnifam
 description: Iterative HMM-based protein family generation over very large sequence databases.
 template: splash
 hero:
+  # Raw HTML, not `light`/`dark`: those are requested at 400x400 and cropped to a square.
   image:
-    light: ../../assets/logo.webp
-    dark: ../../assets/logo-dark.webp
-    alt: mgnifam
+    html: >-
+      <img src="/mgnifam/logo.webp" alt="mgnifam" width="768" height="512" style="width:100%;height:auto" class="dark:sl-hidden">
+      <img src="/mgnifam/logo-dark.webp" alt="mgnifam" width="768" height="512" style="width:100%;height:auto" class="light:sl-hidden">
   tagline: Iterative HMM-based protein family generation over very large sequence databases.
   actions:
     - text: Get started
