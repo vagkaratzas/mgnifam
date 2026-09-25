@@ -13,6 +13,14 @@ dependency versions pinned in `uv.lock` (`uv sync --frozen`). Installing from Py
 pyhmmer, pyfamsa and pytrimal within their declared ranges instead, and a different
 resolution may change results.
 
+## [Unreleased]
+
+### Added
+
+- **Documentation site** at https://vagkaratzas.github.io/mgnifam/, with guides for both
+  commands, the output reference, and an API reference generated from the docstrings. The
+  README is now an overview that links into it.
+
 ## [3.1.0] - 2026/09/21
 
 ### Added

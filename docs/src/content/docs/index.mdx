@@ -1,0 +1,46 @@
+---
+title: mgnifam
+description: Iterative HMM-based protein family generation over very large sequence databases.
+template: splash
+hero:
+  # Raw HTML, not `light`/`dark`: those are requested at 400x400 and cropped to a square.
+  image:
+    html: >-
+      <img src="/mgnifam/logo.webp" alt="mgnifam" width="768" height="512" style="width:100%;height:auto" class="dark:sl-hidden">
+      <img src="/mgnifam/logo-dark.webp" alt="mgnifam" width="768" height="512" style="width:100%;height:auto" class="light:sl-hidden">
+  tagline: Iterative HMM-based protein family generation over very large sequence databases.
+  actions:
+    - text: Get started
+      link: /mgnifam/guides/installation/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/vagkaratzas/mgnifam
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+Given a chunk of MMseqs2 clusters and a protein FASTA, `mgnifam generate_families` builds an
+HMM from each cluster, recruits new members from the whole database, re-aligns, and
+either converges on a family or discards the cluster. It is the core algorithm of the
+[`mgnifams`](https://github.com/vagkaratzas/mgnifams) Nextflow pipeline, extracted into
+a standalone, tested package.
+
+<CardGrid>
+  <Card title="Byte-reproducible" icon="approve-check">
+    Same inputs, same outputs, across `--cpus`, `--batch_size`, `--prefetch_targets` and
+    `PYTHONHASHSEED`, for the dependency set in `uv.lock`.
+  </Card>
+  <Card title="Built for billions" icon="rocket">
+    Targets stream from disk, random access goes through an Easel SSI index, and families
+    are searched in batched `hmmsearch` waves.
+  </Card>
+</CardGrid>
+
+<CardGrid>
+  <LinkCard title="Installation" href="/mgnifam/guides/installation/" description="pip, uv, bioconda, or a locked checkout." />
+  <LinkCard title="Generating families" href="/mgnifam/guides/generate-families/" description="From clusters to converged HMM families." />
+  <LinkCard title="Updating families" href="/mgnifam/guides/update-families/" description="Refresh existing models against a new release." />
+  <LinkCard title="Outputs" href="/mgnifam/reference/outputs/" description="Every file written, exit status, and the MultiQC summary." />
+</CardGrid>
