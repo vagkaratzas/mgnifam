@@ -1,0 +1,19 @@
+---
+title: Python API
+description: Which parts of the mgnifam Python package are a stable interface.
+---
+
+import { Autodoc } from 'starlight-pydocs/components';
+
+`mgnifam` is a command-line tool first. The generated API pages document every module so
+that contributors can browse the docstrings, most of which explain an invariant, but
+only three names are a stable interface:
+
+- the `mgnifam` console script and its subcommands, equivalently `python -m mgnifam`;
+- `mgnifam.__version__`;
+- `mgnifam.generate_families.build_ssi_index`, for building a shared index once upstream
+  of many chunk tasks.
+
+Everything else may change in any release without notice.
+
+<Autodoc name="mgnifam.generate_families.build_ssi_index" />

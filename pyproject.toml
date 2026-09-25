@@ -40,6 +40,7 @@ mgnifam = "mgnifam.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/vagkaratzas/mgnifam"
+Documentation = "https://vagkaratzas.github.io/mgnifam/"
 Repository = "https://github.com/vagkaratzas/mgnifam"
 Changelog = "https://github.com/vagkaratzas/mgnifam/blob/main/CHANGELOG.md"
 Issues = "https://github.com/vagkaratzas/mgnifam/issues"
