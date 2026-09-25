@@ -222,3 +222,8 @@ __marimo__/
 
 # serena LSP cache
 .serena/
+
+# Documentation site (docs/)
+node_modules/
+docs/dist/
+docs/.astro/

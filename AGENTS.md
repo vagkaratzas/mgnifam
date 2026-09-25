@@ -1,7 +1,8 @@
 # AGENTS.md
 
-Notes for coding agents working in this repository. The README explains what the tool
-does and how to run it; this file covers what will bite you. Read both.
+Notes for coding agents working in this repository. The documentation site (`docs/`,
+published at https://vagkaratzas.github.io/mgnifam/) explains what the tool does and how
+to run it; this file covers what will bite you. Read both.
 
 ## Ground rules
 
@@ -228,7 +229,8 @@ testable without the dispatcher. `remove_redundant` and `merge_families` are exp
 `update_families` imports the algorithm out of `generate_families` and owns only its own
 `main()` loop. **When a third command lands, extract the shared machinery into a
 `_pipeline.py` and make all three thin.** Not before: the shape three commands share is
-worth observing rather than guessing, and `README.md` documents
+worth observing rather than guessing, and the docs (`guides/generate-families.md` and
+`reference/python-api.mdx`) document
 `from mgnifam.generate_families import build_ssi_index` as a public entry point that a move
 would break.
 
@@ -274,8 +276,23 @@ would break.
 
 ## Docs that must move together
 
-`README.md`, `CHANGELOG.md`, `AGENTS.md` and the docstrings all describe the same
-guarantees. `CHANGELOG.md` states them for users, with contributor-facing differences in an optional
+The pages under `docs/src/content/docs/`, `README.md`, `CHANGELOG.md`, `AGENTS.md` and the
+docstrings all describe the same guarantees. The docs site holds the user guide; `README.md`
+is only the pitch, install and quick start, and links into the site rather than restating it.
+The API reference pages are generated from the docstrings, so a docstring is user-visible
+documentation. `CHANGELOG.md` states them for users, with contributor-facing differences in an optional
 last `Internal` section: changes since the last release only, no function or test names, no
 within-version fix history. `PLAN.md` and `PLAN-REVIEW-LOG.md` are a historical record of how the port was
 designed and reviewed — read them for *why*, do not update them to reflect new work.
+
+Preview and build the site with Node >= 22.12 and `uv` on `PATH` (griffe runs through `uvx`):
+
+```bash
+cd docs
+npm ci
+npm run dev      # http://localhost:4321/mgnifam/
+npm run build    # what CI runs; fails on broken MDX or config
+```
+
+Links between pages carry the `/mgnifam/` base, e.g. `/mgnifam/guides/installation/`.
+Pull requests into `main` build the site; pushes to `main` deploy it to GitHub Pages.
