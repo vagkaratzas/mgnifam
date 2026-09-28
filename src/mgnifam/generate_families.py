@@ -7,11 +7,12 @@ recruits nothing new, or is forced out after three rounds; either way it exits t
 a final hand-architecture build. Clusters that fail a length, membership or
 sequence-count check are discarded.
 
-Three invariants shape the design, and breaking any of them reintroduces a bug:
+Four invariants shape the design, and breaking any of them reintroduces a bug:
 
 1. The database never enters memory. Targets stream from a `SequenceFile`; individual
-   sequences are fetched through an Easel SSI index. `--prefetch_targets` opts back
-   into an in-RAM block, which is a pure speed/memory trade with identical results.
+   sequences are fetched through an Easel SSI index and held only until their batch is
+   written (`IndexedSequences`). `--prefetch_targets` opts back into an in-RAM block,
+   which is a pure speed/memory trade with identical results.
 
 2. `hmmsearch` is always called with `parallel="queries"`. Left to choose, pyhmmer
    selects `parallel="targets"` whenever the query count is below `--cpus`, and its
