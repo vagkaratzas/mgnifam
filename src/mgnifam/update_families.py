@@ -600,6 +600,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                             family_id=name,
                             delta_row=delta_row(deltas[name], family),
                         )
+                indexed_sequences.clear()
                 processed += len(active)
                 crashed += sum(
                     1

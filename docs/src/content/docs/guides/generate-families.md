@@ -95,7 +95,7 @@ of an error.
 | `--recruit_hit_length_percentage` | `0.9` | Minimum hit length as a fraction of the model length. |
 | `--fasta_index` | `<output_dir>/<fasta basename>.ssi` | Path to an Easel SSI index. Used exactly as given and never rebuilt; only the default path is built automatically. |
 | `--output_dir` | `output` | Root directory for every generated file and folder. |
-| `--batch_size` | `2 * cpus` | How many families are searched per `hmmsearch` wave. Keep it `>= cpus`. |
+| `--batch_size` | `2 * cpus` | How many families are searched per `hmmsearch` wave. Keep it `>= cpus`. Memory grows with it: every sequence a batch recruits stays in RAM until the batch is written. |
 | `--prefetch_targets` | off | Load the database into RAM once instead of streaming it per query. Faster, `O(database)` memory, **identical results**. |
 
 Streaming re-reads and re-parses the database once per query. `--prefetch_targets`

@@ -57,6 +57,12 @@ generated/discarded split; an internal crash is recorded as a discard so the chu
 finish, then also fails the completed run with exit 3. Exit 1 means containment could not
 leave coherent output, so that output must not be consumed.
 
+`IndexedSequences.get` memoises every record it reads, for one batch. Both `main`s call
+`clear()` right after the batch's emit loop; a missing or moved clear leaves outputs
+byte-identical while memory grows across the chunk. The SSI guard still runs on each name's
+first read, so keep misses and mismatches out of the memo. Guard:
+`test_each_record_is_read_once_per_batch_and_the_memo_is_bounded` (one per command).
+
 ## The stats file
 
 `<chunk>_stats.json` and `<chunk>_updated_stats.json` are parsed by a MultiQC module that lives in another repository, so

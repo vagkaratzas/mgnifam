@@ -20,6 +20,18 @@ resolution may change results.
 - **Documentation site** at https://vagkaratzas.github.io/mgnifam/, with guides for both
   commands, the output reference, and an API reference generated from the docstrings. The
   README is now an overview that links into it.
+- **Per-family progress in the run log.** Each family now logs one line per stage
+  (initialisation, each round's model build and search, the exit branch, writing) with its
+  state and how long the stage took. Previously a batch's exit branch could run for hours
+  between two log lines.
+
+### Changed
+
+- **Each database sequence is read from the index once per batch** instead of once per
+  pass over a family. Recruitment, the exit branch and alignment renaming each re-read every
+  member, which dominated the exit branch on families of ~150k members. Outputs are
+  byte-identical. The sequences are kept in memory until the batch is written, so peak
+  memory now also grows with `--batch_size`.
 
 ## [3.1.0] - 2026/09/21
 
