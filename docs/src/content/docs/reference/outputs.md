@@ -27,8 +27,8 @@ One file per chunk, so flat in the output root:
 | `<chunk>_successful.txt` | representatives that produced a family |
 | `<chunk>_discarded.csv` | one row per discarded cluster |
 | `<chunk>_converged.txt` | ids of successful families that converged naturally |
-| `<chunk>_stats.json` | run summary for [MultiQC](#multiqc); present only after a completed run |
-| `<chunk>.log` | run log |
+| `<chunk>_mgnifam_stats.json` | run summary for [MultiQC](#multiqc); present only after a completed run |
+| `<chunk>.log` | run log: a line per batch and round, and a line per family per stage with its duration |
 
 Family ids are a 1-based rank among *successful* families, in cluster-file order.
 
@@ -36,15 +36,21 @@ Both CSVs carry a header row, so they load with `pandas.read_csv` as they are:
 
 | file | columns |
 |---|---|
-| `<chunk>_metadata.csv` | `family_id,full_msa_size,protein,region,length,sequence,consensus,converged` |
+| `<chunk>_metadata.csv` | `family_id,converged,seed_msa_size,full_msa_size,rep_protein,rep_region,rep_length,consensus_length,rep_sequence,consensus_sequence` |
 | `<chunk>_discarded.csv` | `representative,reason,value` |
 
-`protein` is quoted, with embedded quotes doubled; a `protein` or `representative`
+`seed_msa_size` and `full_msa_size` count the sequences in the family's two alignments.
+Under `update_families --skip_refine`, `seed_msa_size` and `converged` are empty: that mode
+builds no seed and runs no convergence test.
+The `rep_` columns describe the representative. `consensus_length` is the model's length
+in match states, one per `consensus_sequence` residue.
+
+`rep_protein` is quoted, with embedded quotes doubled; a `rep_protein` or `representative`
 containing a comma or a quote is escaped, so both files parse with a standard CSV reader.
-Literal slashes stay in `protein`, including punctuation after a slash: `protein/v1,variant`
+Literal slashes stay in `rep_protein`, including punctuation after a slash: `protein/v1,variant`
 is one protein field. Only a trailing coordinate range spanning the emitted sequence is
-separated into `region`.
-`region` is `<start>-<end>` on the parent protein, or `-` when the
+separated into `rep_region`.
+`rep_region` is `<start>-<end>` on the parent protein, or `-` when the
 representative spans a whole unsliced record. Those two columns together are the
 `<base>/<start>-<end>` spelling from [Sequence names](/mgnifam/guides/generate-families/#sequence-names), which is also how `<chunk>_reps.fasta` names its
 records. The representative is the highest-scoring
@@ -65,9 +71,10 @@ stopped:
 
 ## MultiQC
 
-Every completed run (exit `0` or `3`) writes one `<chunk>_stats.json`: counts of families
-in, successful, discarded, converged and crashed; discard reasons; and `{value: count}`
-histograms of full-MSA size, model length and representative length. It is read back from
+Every completed run (exit `0` or `3`) writes one `<chunk>_mgnifam_stats.json`: counts of
+families in, successful, discarded, converged and crashed; discard reasons; and
+`{value: count}` histograms of seed-MSA size, full-MSA size, model length and
+representative length. It is read back from
 the chunk's own CSVs, so it never disagrees with them. One chunk is one MultiQC sample, and
 MultiQC merges a pipeline's chunks into one report.
 
@@ -78,8 +85,9 @@ it is byte-identical across `--cpus`, `--batch_size` and `--prefetch_targets` li
 other outputs. `"tool": "mgnifam"` is its first key, and `schema_version` changes only
 when its shape does.
 
-`update_families` writes the same summary as `<chunk>_updated_stats.json`, read back from
-its delta and metadata CSVs. It adds `skip_refine` to the recorded flags and three
+`update_families` writes the same summary as `<chunk>_updated_mgnifam_stats.json`, read
+back from its delta and metadata CSVs. It adds `skip_refine` to the recorded flags and three
 histograms: `model_length_change` (after minus before), `rounds_run` and `retention`.
 Retention keys are the exact `delta.csv` values, and a family with no retention is left
-out. In both files `converged` counts successful families only.
+out. In both files `converged` counts successful families only. Under `--skip_refine` it is
+`null`, since nothing is tested for convergence, and `seed_msa_size` is empty.

@@ -42,7 +42,7 @@ artifact paths and into CSV fields, and it arrives from a file this tool did not
 Per-family artifacts land in the same `hmm/`, `full_msa/`, `seed_msa/` and `rf/`
 directories, named by family. Aggregates are `<chunk>_updated_*`: `families.tsv`,
 `metadata.csv`, `discarded.csv`, `successful.txt`, `converged.txt`, `reps.fasta.gz`,
-`delta.csv`, `stats.json` (see [MultiQC](/mgnifam/reference/outputs/#multiqc)), and `<chunk>_updated.log`.
+`delta.csv`, `mgnifam_stats.json` (see [MultiQC](/mgnifam/reference/outputs/#multiqc)), and `<chunk>_updated.log`.
 
 `<chunk>_updated_delta.csv` is what an update run is *for* — one row per family, whether it
 survived or not:
@@ -55,7 +55,8 @@ Every field but `family_id`, `model_length_before` and `outcome` may be empty, b
 family discarded early never reached the stage that would produce one. `model_length_after`
 is the length of the model that recruited the final membership. `retention` is the fraction
 of round 1's own recruits still present at the end — under `--skip_refine` that is 1.0 by
-construction, since there are no later rounds to drift.
+construction, since there are no later rounds to drift. `converged` is empty under
+`--skip_refine`, which runs no convergence test.
 
 `outcome` is `successful` or the discard reason. `no hits in the new database` means the
 model found nothing at all in the new release; `low complexity model - confounding cluster`

@@ -169,11 +169,23 @@ def test_slash_identifiers_survive_search_and_all_emitted_fields(
         representatives = [line[1:].split("\t")[0] for line in handle if line.startswith(">")]
     for row, representative in zip(metadata, representatives, strict=True):
         assert None not in row
-        assert row["protein"].endswith(suffix)
+        assert row["rep_protein"].endswith(suffix)
         assert (
-            row["protein"] + ("/" + row["region"] if row["region"] != "-" else "") == representative
+            row["rep_protein"] + ("/" + row["rep_region"] if row["rep_region"] != "-" else "")
+            == representative
         )
-        assert len(row["sequence"]) == int(row["length"])
+        assert len(row["rep_sequence"]) == int(row["rep_length"])
+        assert int(row["consensus_length"]) == len(row["consensus_sequence"])
+        seed = output / "seed_msa" / f"{row['family_id']}.sto.gz"
+        if skip_refine:  # recruit-only builds no seed and runs no convergence test
+            assert row["seed_msa_size"] == "" and not seed.exists()
+            assert row["converged"] == ""
+        else:
+            with pyhmmer.easel.MSAFile(seed) as handle:
+                assert int(row["seed_msa_size"]) == len(handle.read().names)
+    with (output / "9_updated_delta.csv").open() as handle:
+        converged = {row["converged"] for row in csv.DictReader(handle)}
+    assert (converged == {""}) if skip_refine else (converged <= {"True", "False"})
     for directory in ("full_msa",) if skip_refine else ("seed_msa", "full_msa"):
         for path in (output / directory).iterdir():
             with pyhmmer.easel.MSAFile(path) as handle:
@@ -422,10 +434,16 @@ def test_a_family_with_no_hits_is_reported_distinctly_from_a_low_complexity_one(
 
     # The model was searched once and is unchanged, so the delta-derived maps are not
     # empty; only what a successful family would have produced is.
-    histograms = json.loads((output / "9_updated_stats.json").read_text())["histograms"]
+    histograms = json.loads((output / "9_updated_mgnifam_stats.json").read_text())["histograms"]
     assert histograms["model_length_change"] == {"0": len(rows)}
     assert histograms["rounds_run"] == {"1": len(rows)}
-    for name in ("retention", "full_msa_size", "model_length", "representative_length"):
+    for name in (
+        "retention",
+        "seed_msa_size",
+        "full_msa_size",
+        "model_length",
+        "representative_length",
+    ):
         assert histograms[name] == {}
 
 
@@ -454,7 +472,7 @@ def test_every_discard_produces_exactly_one_delta_row(
     ids = [row["family_id"] for row in rows]
     assert len(ids) == len(set(ids)) == len(family_names(generated))
     assert sum(1 for row in rows if row["outcome"].startswith("internal error")) == 1
-    stats = json.loads((output / "9_updated_stats.json").read_text())
+    stats = json.loads((output / "9_updated_mgnifam_stats.json").read_text())
     assert (stats["exit_status"], stats["families"]["crashed"]) == (
         generate_families.EXIT_CRASHED_FAMILIES,
         1,
@@ -475,7 +493,7 @@ def test_a_delta_failure_after_a_discard_append_is_fatal_and_not_re_emitted(
         raise OSError("no space left on device")
 
     monkeypatch.setattr(generate_families, "write_delta", refuse)
-    stale = tmp_path / "out" / "9_updated_stats.json"
+    stale = tmp_path / "out" / "9_updated_mgnifam_stats.json"
     stale.parent.mkdir()
     stale.write_text("{}\n")
 
@@ -573,7 +591,7 @@ def test_a_directory_holding_another_runs_families_is_refused(
     names = family_names(generated)
     assert len(names) >= 2
     update(generated / "hmm", extra_fasta, output, "--skip_refine")
-    stats_before = (output / "9_updated_stats.json").read_bytes()
+    stats_before = (output / "9_updated_mgnifam_stats.json").read_bytes()
 
     subset = tmp_path / "subset"
     subset.mkdir()
@@ -585,7 +603,7 @@ def test_a_directory_holding_another_runs_families_is_refused(
         update(subset, extra_fasta, output, "--skip_refine")
     # Refusing must not have half-cleared the directory it refused to write into.
     assert family_names(output) == names
-    assert (output / "9_updated_stats.json").read_bytes() == stats_before
+    assert (output / "9_updated_mgnifam_stats.json").read_bytes() == stats_before
 
 
 def test_a_partial_run_can_be_rerun_in_place(
@@ -652,7 +670,7 @@ def test_input_models_cannot_be_overwritten(
     assert not (output / "9_updated.log").exists()
 
 
-@pytest.mark.parametrize("aggregate", ["9_updated_reps.fasta.gz", "9_updated_stats.json"])
+@pytest.mark.parametrize("aggregate", ["9_updated_reps.fasta.gz", "9_updated_mgnifam_stats.json"])
 def test_input_library_cannot_alias_an_aggregate(
     tmp_path: Path, generated: Path, small_fasta: Path, aggregate: str
 ) -> None:
@@ -724,7 +742,7 @@ def test_stats_file_matches_aggregates(
     extra = ("--skip_refine",) if skip_refine else ()
     output = update(fixture_directory / "mgnifams_v2.hmm.lib.gz", v2_fasta, tmp_path, *extra)
 
-    stats = json.loads((output / "9_updated_stats.json").read_text())
+    stats = json.loads((output / "9_updated_mgnifam_stats.json").read_text())
     assert (stats["command"], stats["chunk_id"], stats["exit_status"]) == (
         "update_families",
         "9",
@@ -742,7 +760,8 @@ def test_stats_file_matches_aggregates(
         "input": 14,
         "successful": len(successful),
         "discarded": 14 - len(successful),
-        "converged": sum(row["converged"] == "True" for row in successful),
+        # Nothing is tested for convergence without refinement: unknown, not zero.
+        "converged": None if skip_refine else sum(row["converged"] == "True" for row in successful),
         "crashed": 0,
     }
     assert len(successful) == (14 if skip_refine else 13)
@@ -750,9 +769,13 @@ def test_stats_file_matches_aggregates(
         Counter(row["outcome"] for row in delta if row["outcome"] != "successful")
     )
     assert stats["histograms"] == {
+        # Recruit-only builds no seed, so there is nothing to count.
+        "seed_msa_size": histogram_of(
+            int(row["seed_msa_size"]) for row in metadata if row["seed_msa_size"]
+        ),
         "full_msa_size": histogram_of(int(row["full_msa_size"]) for row in metadata),
-        "model_length": histogram_of(len(row["consensus"]) for row in metadata),
-        "representative_length": histogram_of(int(row["length"]) for row in metadata),
+        "model_length": histogram_of(len(row["consensus_sequence"]) for row in metadata),
+        "representative_length": histogram_of(int(row["rep_length"]) for row in metadata),
         "model_length_change": histogram_of(
             int(row["model_length_after"]) - int(row["model_length_before"]) for row in delta
         ),
@@ -774,3 +797,26 @@ def test_a_converged_then_discarded_family_is_not_counted_as_converged(tmp_path:
 
     families = update_families.update_stats(tmp_path, options, 0)["families"]
     assert (families["successful"], families["discarded"], families["converged"]) == (2, 1, 1)
+
+
+@pytest.mark.parametrize("skip_refine", [True, False])
+def test_each_record_is_read_once_per_batch_and_the_memo_is_bounded(
+    tmp_path: Path,
+    fixture_directory: Path,
+    v2_fasta: Path,
+    index_reads: SimpleNamespace,
+    skip_refine: bool,
+) -> None:
+    """Issue #17: recruit, exit branch and renumbering each re-read every record.
+
+    `index_reads` fails on the second read of a name within a batch. Fourteen families in
+    batches of six gives three batches, so a missing or misplaced clear is observable.
+    """
+    extra = ["--batch_size", "6", *(["--skip_refine"] if skip_refine else [])]
+    output = update(fixture_directory / "mgnifams_v2.hmm.lib.gz", v2_fasta, tmp_path, *extra)
+
+    assert len(index_reads.clears) == 3
+    [indexed] = index_reads.instances
+    assert indexed.cache == {}
+    assert index_reads.gets > index_reads.reads > 0
+    assert "stage=the exit branch state=" in (output / "9_updated.log").read_text()

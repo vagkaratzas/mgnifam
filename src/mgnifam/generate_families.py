@@ -75,7 +75,14 @@ FAMILY_DIRECTORIES = ("seed_msa", "full_msa", "hmm", "rf")
 SLICE_SUFFIX = re.compile(r"(.+)/(\d+)-(\d+)")
 # Header rows for the two per-chunk CSVs, written by `main` before any result. Column
 # order is the order `emit_family` writes, and must be changed with it.
-METADATA_HEADER = "family_id,full_msa_size,protein,region,length,sequence,consensus,converged\n"
+# Family scalars first, then the representative, the two lengths, and the two long strings
+# last, so a row stays readable in a terminal. `seed_msa_size` is empty when no seed was
+# built and `converged` when nothing was tested for convergence: both mean a recruit-only
+# update.
+METADATA_HEADER = (
+    "family_id,converged,seed_msa_size,full_msa_size,"
+    "rep_protein,rep_region,rep_length,consensus_length,rep_sequence,consensus_sequence\n"
+)
 DISCARDED_HEADER = "representative,reason,value\n"
 # The per-run summary a MultiQC module parses from another repository, so a breaking change
 # to its shape must bump this. Only flags that change results are recorded: paths, --cpus,
@@ -240,8 +247,20 @@ def fetch_indexed_sequence(
 
 
 class IndexedSequences:
+    """Database records by name, read through the SSI index and memoised for one batch.
+
+    A record is needed several times per family: every round's `filter_hits`, the exit
+    branch's `filter_hits`, and `renumber_msa` for each alignment row -- and once per
+    reported domain within each of those. Every read is a random seek, in single-threaded
+    Python, so on families of ~150k members the re-reads alone took hours. Both `main`s
+    call `clear` after each batch's emit loop, so memory is bounded by one batch's
+    recruits and scales with `--batch_size`.
+    """
+
     def __init__(self, sequence_file: pyhmmer.easel.SequenceFile) -> None:
         self.indexed = sequence_file.indexed
+        # ponytail: unbounded within a batch; an LRU only if one batch outgrows memory.
+        self.cache: dict[str, str] = {}
 
     def get(self, name: str, *, missing_ok: bool = False) -> Sequence | None:
         """Fetch a database record, upper-cased.
@@ -255,14 +274,24 @@ class IndexedSequences:
         every consumer of a database sequence goes through this method. Nothing is lost,
         because both alignment paths digitize before writing and Easel's digital
         alphabet has no case.
+
+        The memo holds plain strings, never pyhmmer objects. A name is verified against
+        the index on its first read; a missing name is not memoised.
         """
-        try:
-            fetched = fetch_indexed_sequence(self.indexed, name)
-        except KeyError:
-            if missing_ok:
-                return None
-            raise
-        return Sequence(name, fetched.sequence.upper())
+        sequence = self.cache.get(name)
+        if sequence is None:  # a memoised empty record is "", which is not None
+            try:
+                fetched = fetch_indexed_sequence(self.indexed, name)
+            except KeyError:
+                if missing_ok:
+                    return None
+                raise
+            sequence = self.cache[name] = fetched.sequence.upper()
+        return Sequence(name, sequence)
+
+    def clear(self) -> None:
+        """Drop the memo; called once per batch, after its families are written."""
+        self.cache.clear()
 
 
 def run_initial_msa(
@@ -715,7 +744,8 @@ class Family:
     full_msa_num_seqs: int = 0
     discard_reason: str = ""
     discard_value: int | float = 0.0
-    ever_converged: bool = False
+    # `None` for a recruit-only update, which runs no convergence test; written as empty.
+    ever_converged: bool | None = False
     # Set only by `update_families`, whose families start with no cluster to be scored
     # against: the first round's own recruits become that yardstick. `advance` clears it
     # after using it, so only round 1 adopts. `generate_families` never sets it -- its
@@ -912,7 +942,11 @@ def family_guard(family: Family, logger: logging.Logger, stage: str) -> Generato
     Only `Exception` is caught: KeyboardInterrupt and SystemExit must still stop the run.
     The traceback goes to the chunk log, because a discard line is a summary and the
     reason a family blew up is a bug report.
+
+    Every stage also logs one progress line with its duration, on every exit path. The
+    batch-level lines alone left hours of per-family work between them silent.
     """
+    started = time.monotonic()
     try:
         yield
     except ChunkCorrupted:
@@ -921,6 +955,14 @@ def family_guard(family: Family, logger: logging.Logger, stage: str) -> Generato
         logger.exception("family %s failed during %s", family.representative, stage)
         # Commas would split the discarded-clusters CSV; `stage` is caller-supplied text.
         family.discard(f"{INTERNAL_ERROR_PREFIX}{stage}".replace(",", " "), 0.0)
+    finally:
+        logger.info(
+            "family=%s stage=%s state=%s took=%.1fs",
+            family.representative,
+            stage,
+            family.state.name,
+            time.monotonic() - started,
+        )
 
 
 def write_delta(writers: Writers, delta_row: str | None) -> None:
@@ -1034,6 +1076,7 @@ def emit_family(
             raise ValueError("successful seed MSA has no RF reference annotation")
         renumbered_seed = renumber_msa(seed_msa.textize(), family_name, indexed)
     renumbered_full = renumber_msa(full_msa, family_name, indexed)
+    seed_msa_size = "" if renumbered_seed is None else len(renumbered_seed.names)
     # Checked here rather than left to the row loop's `zip(strict=True)`: that loop runs
     # after the shared handles have been appended to, so a raise there would put this
     # representative in `successful` and then, through the re-emit, in `discarded` too.
@@ -1104,10 +1147,11 @@ def emit_family(
                 # than a `csv.writer` row so the always-quoted convention holds: under
                 # `QUOTE_MINIMAL` every ordinary name would lose its quotes.
                 quoted_protein = protein.replace('"', '""')
+                converged = "" if family.ever_converged is None else family.ever_converged
                 writers.family_metadata.write(
-                    f'{family_id},{family.full_msa_num_seqs},"{quoted_protein}",'
-                    f"{region},{len(residues)},{residues},{final_hmm.consensus},"
-                    f"{family.ever_converged}\n"
+                    f"{family_id},{converged},{seed_msa_size},{family.full_msa_num_seqs},"
+                    f'"{quoted_protein}",{region},{len(residues)},{final_hmm.M},'
+                    f"{residues},{final_hmm.consensus}\n"
                 )
                 # `family_name`, not a second `f"{chunk}_{id}"`: with a preserved name and
                 # an unrelated `--chunk_id` that reconstruction produced `9_1_7`, breaking
@@ -1222,7 +1266,7 @@ def prepare_output_directories(root: Path, chunk: str) -> None:
     The stats file goes first: it marks a completed run, and from here on the directory
     no longer holds one.
     """
-    (root / f"{chunk}_stats.json").unlink(missing_ok=True)
+    (root / f"{chunk}_mgnifam_stats.json").unlink(missing_ok=True)
     for directory in FAMILY_DIRECTORIES:
         (root / directory).mkdir(parents=True, exist_ok=True)
     # An exact numeric suffix, not a `<chunk>_*` glob: chunk "foo" would otherwise
@@ -1251,10 +1295,11 @@ def metadata_histograms(path: Path) -> dict[str, dict[str, int]]:
     with path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     return {
+        # Empty for a recruit-only update, which builds no seed: left out, not counted as 0.
+        "seed_msa_size": histogram(row["seed_msa_size"] for row in rows if row["seed_msa_size"]),
         "full_msa_size": histogram(row["full_msa_size"] for row in rows),
-        # One consensus residue per match state, so this is the emitted model's length.
-        "model_length": histogram(str(len(row["consensus"])) for row in rows),
-        "representative_length": histogram(row["length"] for row in rows),
+        "model_length": histogram(row["consensus_length"] for row in rows),
+        "representative_length": histogram(row["rep_length"] for row in rows),
     }
 
 
@@ -1384,7 +1429,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
         options.batch_size = 2 * options.cpus
 
     root = options.output_dir
-    stats_path = root / f"{options.chunk_id}_stats.json"
+    stats_path = root / f"{options.chunk_id}_mgnifam_stats.json"
     guard_stats_path(stats_path, (options.clusters_chunk, options.fasta_file, options.fasta_index))
     prepare_output_directories(root, options.chunk_id)
     index_path = resolve_index(options, root)
@@ -1524,6 +1569,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                         # cannot record its own failure and must exit 1 rather than claim
                         # coherent output.
                         emit_family(family, success_count, options.chunk_id, writers)
+                indexed_sequences.clear()
                 processed += len(active)
                 crashed += sum(
                     1

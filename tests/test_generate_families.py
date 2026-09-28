@@ -292,6 +292,65 @@ def test_soft_masked_fasta_is_normalised_at_the_fetch_boundary(tmp_path: Path) -
         assert gf.parse_protein_name("prot_101_117", "MKTAY-laa", sequences) == "prot/101-108"
 
 
+def test_indexed_sequences_read_each_name_once_until_cleared() -> None:
+    """The memo serves repeat lookups, including an empty record, until `clear`.
+
+    A miss and an index mismatch must not be memoised: the first would turn a later
+    lookup's `KeyError` into a stale answer, the second would bypass the SSI guard.
+    """
+    reads: Counter[str] = Counter()
+
+    class CountingIndex(dict[str, pyhmmer.easel.TextSequence]):
+        def __getitem__(self, name: str) -> pyhmmer.easel.TextSequence:
+            reads[name] += 1
+            return super().__getitem__(name)
+
+    index = CountingIndex(
+        wanted=pyhmmer.easel.TextSequence(name="wanted", sequence="mkt"),
+        empty=pyhmmer.easel.TextSequence(name="empty", sequence=""),
+        stale=pyhmmer.easel.TextSequence(name="other", sequence="AAAA"),
+    )
+    sequences = gf.IndexedSequences(SimpleNamespace(indexed=index))  # type: ignore[arg-type]
+
+    for _ in range(2):
+        assert sequences.get("wanted") == gf.Sequence("wanted", "MKT")
+        assert sequences.get("empty") == gf.Sequence("empty", "")
+        assert sequences.get("absent", missing_ok=True) is None
+        with pytest.raises(gf.IndexMismatchError):
+            sequences.get("stale")
+    assert reads == {"wanted": 1, "empty": 1, "absent": 2, "stale": 2}
+
+    sequences.clear()
+    assert sequences.cache == {}
+    sequences.get("wanted")
+    assert reads["wanted"] == 2
+
+
+def test_each_record_is_read_once_per_batch_and_the_memo_is_bounded(
+    tmp_path: Path,
+    fixture_directory: Path,
+    small_fasta: Path,
+    shared_index: Path,
+    index_reads: SimpleNamespace,
+) -> None:
+    """Issue #17: every pass over a family used to re-read its records from the index.
+
+    `index_reads` fails on the second read of a name within a batch. The clear must run
+    once per batch after the emit loop: omitted, the memo spans the chunk; moved to the
+    batch start, it outlives the last batch.
+    """
+    clusters = fixture_directory / "clustering.tsv"
+    output = run_pipeline(
+        tmp_path, cli_args(clusters, small_fasta, fasta_index=shared_index, batch_size=1)
+    )
+
+    assert len(index_reads.clears) == len(gf.load_clusters(clusters)) > 1
+    [indexed] = index_reads.instances
+    assert indexed.cache == {}
+    assert index_reads.gets > index_reads.reads > 0
+    assert "stage=the exit branch state=" in (output / "chunk.log").read_text()
+
+
 def text_msa(names: list[str], sequences: list[str], reference: str) -> pyhmmer.easel.TextMSA:
     msa = pyhmmer.easel.TextMSA(
         sequences=[
@@ -700,10 +759,10 @@ def test_csv_rows_round_trip_comma_and_quote_bearing_names(
         "value": "1",
     }
     (metadata_row,) = csv.DictReader(io.StringIO(writers.family_metadata.getvalue()))
-    assert metadata_row["protein"] == protein
-    assert metadata_row["region"] == region
-    assert metadata_row["length"] == "4"
-    assert metadata_row["sequence"] == "AAAA"
+    assert metadata_row["rep_protein"] == protein
+    assert metadata_row["rep_region"] == region
+    assert metadata_row["rep_length"] == "4"
+    assert metadata_row["rep_sequence"] == "AAAA"
     assert None not in metadata_row
     assert len(metadata_row) == len(gf.METADATA_HEADER.strip().split(","))
 
@@ -930,7 +989,7 @@ def test_cpus_and_sanity_anchors(
         "4497037939_1_144",
     ]
     metadata = csv_rows(baseline_output / "chunk_metadata.csv", gf.METADATA_HEADER)
-    assert [line.split(",")[2].strip('"') for line in metadata] == [
+    assert [line.split(",")[4].strip('"') for line in metadata] == [
         "782510898",
         "5761513631",
         "1446399400",
@@ -963,7 +1022,7 @@ def test_batch_size_invariance(
     assert scientific_artifacts(outputs[0]) == scientific_artifacts(outputs[1])
     for output in outputs:
         mapping = [
-            (line.split(",")[2], line.split(",", 1)[0])
+            (line.split(",")[4], line.split(",", 1)[0])
             for line in csv_rows(output / "chunk_metadata.csv", gf.METADATA_HEADER)
         ]
         assert mapping == [('"782510898"', "1"), ('"5761513631"', "2"), ('"1446399400"', "3")]
@@ -1148,7 +1207,7 @@ def test_console_script_returns_three_after_a_contained_family_crash(
     assert result.returncode == gf.EXIT_CRASHED_FAMILIES
     output = run_directory / "output"
     assert "crashed=1" in (output / "chunk.log").read_text()
-    stats = json.loads((output / "chunk_stats.json").read_text())
+    stats = json.loads((output / "chunk_mgnifam_stats.json").read_text())
     assert (stats["exit_status"], stats["families"]["crashed"]) == (gf.EXIT_CRASHED_FAMILIES, 1)
     successful = (output / "chunk_successful.txt").read_text().splitlines()
     discarded = csv_rows(output / "chunk_discarded.csv", gf.DISCARDED_HEADER)
@@ -1211,7 +1270,7 @@ def test_shared_append_failure_is_fatal_not_a_contained_discard(
     run_directory = tmp_path / "corrupt"
     # A previous run's summary must not outlive the output it described.
     (run_directory / "output").mkdir(parents=True)
-    (run_directory / "output" / "chunk_stats.json").write_text("{}\n")
+    (run_directory / "output" / "chunk_mgnifam_stats.json").write_text("{}\n")
     with pytest.raises(SystemExit) as excinfo:
         run_pipeline(
             run_directory,
@@ -1224,7 +1283,7 @@ def test_shared_append_failure_is_fatal_not_a_contained_discard(
     discarded = csv_rows(output / "chunk_discarded.csv", gf.DISCARDED_HEADER)
     assert all(gf.INTERNAL_ERROR_PREFIX not in row for row in discarded)
     assert "chunk output is corrupted" in (output / "chunk.log").read_text()
-    assert not (output / "chunk_stats.json").exists()
+    assert not (output / "chunk_mgnifam_stats.json").exists()
 
 
 def test_family_guard_contains_only_exceptions() -> None:
@@ -1706,10 +1765,10 @@ def histogram_of(values: object) -> dict[str, int]:
 
 def test_stats_file_matches_aggregates(v2_output: Path) -> None:
     """The MultiQC summary is a projection of the chunk's own CSVs, nothing more."""
-    stats = json.loads((v2_output / "v2_stats.json").read_text())
+    stats = json.loads((v2_output / "v2_mgnifam_stats.json").read_text())
     assert next(iter(stats)) == "tool"
     # Readable by whoever can read the CSVs beside it: the umask applies, not a forced 0600.
-    mode = (v2_output / "v2_stats.json").stat().st_mode
+    mode = (v2_output / "v2_mgnifam_stats.json").stat().st_mode
     assert mode == (v2_output / "v2_metadata.csv").stat().st_mode
     assert {key: stats[key] for key in ("tool", "schema_version", "version", "command")} == {
         "tool": "mgnifam",
@@ -1736,12 +1795,17 @@ def test_stats_file_matches_aggregates(v2_output: Path) -> None:
     }
     assert stats["discard_reasons"] == dict(Counter(reasons))
     assert stats["histograms"] == {
+        "seed_msa_size": histogram_of(int(row["seed_msa_size"]) for row in rows),
         "full_msa_size": histogram_of(int(row["full_msa_size"]) for row in rows),
-        "model_length": histogram_of(len(row["consensus"]) for row in rows),
-        "representative_length": histogram_of(int(row["length"]) for row in rows),
+        "model_length": histogram_of(len(row["consensus_sequence"]) for row in rows),
+        "representative_length": histogram_of(int(row["rep_length"]) for row in rows),
     }
     for counts in stats["histograms"].values():
         assert list(counts) == sorted(counts, key=int)
+    for row in rows:
+        assert int(row["consensus_length"]) == len(row["consensus_sequence"])
+        with pyhmmer.easel.MSAFile(v2_output / "seed_msa" / f"v2_{row['family_id']}.sto.gz") as msa:
+            assert int(row["seed_msa_size"]) == len(msa.read().names)
 
 
 def test_empty_chunk_writes_an_all_zero_summary(
@@ -1753,7 +1817,7 @@ def test_empty_chunk_writes_an_all_zero_summary(
         tmp_path / "run", cli_args(clusters, small_fasta, fasta_index=shared_index)
     )
 
-    stats = json.loads((output / "chunk_stats.json").read_text())
+    stats = json.loads((output / "chunk_mgnifam_stats.json").read_text())
     assert set(stats["families"].values()) == {0}
     assert stats["discard_reasons"] == {}
     assert all(counts == {} for counts in stats["histograms"].values())
@@ -1762,13 +1826,15 @@ def test_empty_chunk_writes_an_all_zero_summary(
 def test_stats_path_cannot_overwrite_an_input(
     tmp_path: Path, fixture_directory: Path, small_fasta: Path, shared_index: Path
 ) -> None:
-    clusters = tmp_path / "output" / "chunk_stats.json"
+    clusters = tmp_path / "output" / "chunk_mgnifam_stats.json"
     clusters.parent.mkdir()
     clusters.write_bytes((fixture_directory / "clustering.tsv").read_bytes())
     before = clusters.read_bytes()
 
     with contextlib.chdir(tmp_path), pytest.raises(ValueError, match="overlaps an input"):
-        gf.main(cli_args(Path("output/chunk_stats.json"), small_fasta, fasta_index=shared_index))
+        gf.main(
+            cli_args(Path("output/chunk_mgnifam_stats.json"), small_fasta, fasta_index=shared_index)
+        )
     assert clusters.read_bytes() == before
 
 
@@ -1793,6 +1859,6 @@ def test_failed_stats_commit_exits_one_and_leaves_no_stats(
 
     assert excinfo.value.code == 1
     output = run_directory / "output"
-    assert not (output / "chunk_stats.json").exists()
+    assert not (output / "chunk_mgnifam_stats.json").exists()
     assert not list(output.glob("*.tmp"))
     assert "stats commit failed" in (output / "chunk.log").read_text()

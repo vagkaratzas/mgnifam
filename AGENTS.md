@@ -57,9 +57,15 @@ generated/discarded split; an internal crash is recorded as a discard so the chu
 finish, then also fails the completed run with exit 3. Exit 1 means containment could not
 leave coherent output, so that output must not be consumed.
 
+`IndexedSequences.get` memoises every record it reads, for one batch. Both `main`s call
+`clear()` right after the batch's emit loop; a missing or moved clear leaves outputs
+byte-identical while memory grows across the chunk. The SSI guard still runs on each name's
+first read, so keep misses and mismatches out of the memo. Guard:
+`test_each_record_is_read_once_per_batch_and_the_memo_is_bounded` (one per command).
+
 ## The stats file
 
-`<chunk>_stats.json` and `<chunk>_updated_stats.json` are parsed by a MultiQC module that lives in another repository, so
+`<chunk>_mgnifam_stats.json` and `<chunk>_updated_mgnifam_stats.json` are parsed by a MultiQC module that lives in another repository, so
 its shape is a contract: bump `STATS_SCHEMA_VERSION` on any breaking change. Four rules:
 
 - **Derived, never counted.** It is built by reading the chunk's closed aggregate CSVs
@@ -74,7 +80,8 @@ its shape is a contract: bump `STATS_SCHEMA_VERSION` on any breaking change. Fou
   and `--prefetch_targets`; adding one breaks the reproducibility tests.
 - **`converged` counts successful families only.** `discard()` keeps `ever_converged`,
   so an update delta row can say `True` on a discard. Guard:
-  `test_a_converged_then_discarded_family_is_not_counted_as_converged`.
+  `test_a_converged_then_discarded_family_is_not_counted_as_converged`. Under
+  `--skip_refine` it is `null`: nothing was tested, and `0` would claim otherwise.
 
 ## Deliberate differences from the legacy script
 

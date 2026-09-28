@@ -208,6 +208,7 @@ tempCodeRunnerFile.py
 
 # Generated mgnifam outputs
 output/
+output_update/
 
 # PyPI configuration file
 .pypirc

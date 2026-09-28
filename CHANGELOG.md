@@ -13,13 +13,47 @@ dependency versions pinned in `uv.lock` (`uv sync --frozen`). Installing from Py
 pyhmmer, pyfamsa and pytrimal within their declared ranges instead, and a different
 resolution may change results.
 
-## [Unreleased]
+## [4.0.0] - 2026/09/28
+
+A major version because two outputs change shape: the metadata CSV's columns are renamed
+and reordered, and the MultiQC summary is renamed to `<chunk>_mgnifam_stats.json`.
 
 ### Added
 
+- **Seed MSA size histogram** in the MultiQC summary, next to the full-MSA size one.
+  `update_families --skip_refine` builds no seed, so it leaves the histogram empty.
 - **Documentation site** at https://vagkaratzas.github.io/mgnifam/, with guides for both
   commands, the output reference, and an API reference generated from the docstrings. The
   README is now an overview that links into it.
+- **Per-family progress in the run log.** Each family now logs one line per stage
+  (initialisation, each round's model build and search, the exit branch, writing) with its
+  state and how long the stage took. Previously a batch's exit branch could run for hours
+  between two log lines.
+
+### Changed
+
+- **Each database sequence is read from the index once per batch** instead of once per
+  pass over a family. Recruitment, the exit branch and alignment renaming each re-read every
+  member, which dominated the exit branch on families of ~150k members. Outputs are
+  byte-identical. The sequences are kept in memory until the batch is written, so peak
+  memory now also grows with `--batch_size`.
+- **Breaking:** `<chunk>_metadata.csv` (and `<chunk>_updated_metadata.csv`) gains
+  `seed_msa_size` and `consensus_length`, prefixes the representative's columns with `rep_`
+  (`protein`, `region`, `length`, `sequence` become `rep_protein`, `rep_region`,
+  `rep_length`, `rep_sequence`), renames `consensus` to `consensus_sequence`, and reorders
+  them: family values first, then the representative and model lengths, then the two
+  sequences.
+
+  ```
+  family_id,converged,seed_msa_size,full_msa_size,rep_protein,rep_region,rep_length,consensus_length,rep_sequence,consensus_sequence
+  ```
+- **Breaking:** under `update_families --skip_refine`, `converged` is now empty instead of
+  `False` in both the metadata and delta CSVs: that mode runs no convergence test.
+  `seed_msa_size` is empty there too, as no seed is built. The stats file reports
+  `converged` as `null` for such a run rather than `0`.
+- **Breaking:** the MultiQC summary is renamed to `<chunk>_mgnifam_stats.json` (and
+  `<chunk>_updated_mgnifam_stats.json`), so it can be found by file name alone. A rerun
+  does not remove a summary left under the old name.
 
 ## [3.1.0] - 2026/09/21
 
