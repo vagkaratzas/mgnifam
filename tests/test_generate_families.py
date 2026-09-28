@@ -759,10 +759,10 @@ def test_csv_rows_round_trip_comma_and_quote_bearing_names(
         "value": "1",
     }
     (metadata_row,) = csv.DictReader(io.StringIO(writers.family_metadata.getvalue()))
-    assert metadata_row["protein"] == protein
-    assert metadata_row["region"] == region
-    assert metadata_row["length"] == "4"
-    assert metadata_row["sequence"] == "AAAA"
+    assert metadata_row["rep_protein"] == protein
+    assert metadata_row["rep_region"] == region
+    assert metadata_row["rep_length"] == "4"
+    assert metadata_row["rep_sequence"] == "AAAA"
     assert None not in metadata_row
     assert len(metadata_row) == len(gf.METADATA_HEADER.strip().split(","))
 
@@ -989,7 +989,7 @@ def test_cpus_and_sanity_anchors(
         "4497037939_1_144",
     ]
     metadata = csv_rows(baseline_output / "chunk_metadata.csv", gf.METADATA_HEADER)
-    assert [line.split(",")[2].strip('"') for line in metadata] == [
+    assert [line.split(",")[4].strip('"') for line in metadata] == [
         "782510898",
         "5761513631",
         "1446399400",
@@ -1022,7 +1022,7 @@ def test_batch_size_invariance(
     assert scientific_artifacts(outputs[0]) == scientific_artifacts(outputs[1])
     for output in outputs:
         mapping = [
-            (line.split(",")[2], line.split(",", 1)[0])
+            (line.split(",")[4], line.split(",", 1)[0])
             for line in csv_rows(output / "chunk_metadata.csv", gf.METADATA_HEADER)
         ]
         assert mapping == [('"782510898"', "1"), ('"5761513631"', "2"), ('"1446399400"', "3")]
@@ -1796,11 +1796,15 @@ def test_stats_file_matches_aggregates(v2_output: Path) -> None:
     assert stats["discard_reasons"] == dict(Counter(reasons))
     assert stats["histograms"] == {
         "full_msa_size": histogram_of(int(row["full_msa_size"]) for row in rows),
-        "model_length": histogram_of(len(row["consensus"]) for row in rows),
-        "representative_length": histogram_of(int(row["length"]) for row in rows),
+        "model_length": histogram_of(len(row["consensus_sequence"]) for row in rows),
+        "representative_length": histogram_of(int(row["rep_length"]) for row in rows),
     }
     for counts in stats["histograms"].values():
         assert list(counts) == sorted(counts, key=int)
+    for row in rows:
+        assert int(row["consensus_length"]) == len(row["consensus_sequence"])
+        with pyhmmer.easel.MSAFile(v2_output / "seed_msa" / f"v2_{row['family_id']}.sto.gz") as msa:
+            assert int(row["seed_msa_size"]) == len(msa.read().names)
 
 
 def test_empty_chunk_writes_an_all_zero_summary(

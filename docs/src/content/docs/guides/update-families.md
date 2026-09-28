@@ -55,7 +55,8 @@ Every field but `family_id`, `model_length_before` and `outcome` may be empty, b
 family discarded early never reached the stage that would produce one. `model_length_after`
 is the length of the model that recruited the final membership. `retention` is the fraction
 of round 1's own recruits still present at the end — under `--skip_refine` that is 1.0 by
-construction, since there are no later rounds to drift.
+construction, since there are no later rounds to drift. `converged` is empty under
+`--skip_refine`, which runs no convergence test.
 
 `outcome` is `successful` or the discard reason. `no hits in the new database` means the
 model found nothing at all in the new release; `low complexity model - confounding cluster`

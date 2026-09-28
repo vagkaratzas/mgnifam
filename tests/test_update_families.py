@@ -169,11 +169,23 @@ def test_slash_identifiers_survive_search_and_all_emitted_fields(
         representatives = [line[1:].split("\t")[0] for line in handle if line.startswith(">")]
     for row, representative in zip(metadata, representatives, strict=True):
         assert None not in row
-        assert row["protein"].endswith(suffix)
+        assert row["rep_protein"].endswith(suffix)
         assert (
-            row["protein"] + ("/" + row["region"] if row["region"] != "-" else "") == representative
+            row["rep_protein"] + ("/" + row["rep_region"] if row["rep_region"] != "-" else "")
+            == representative
         )
-        assert len(row["sequence"]) == int(row["length"])
+        assert len(row["rep_sequence"]) == int(row["rep_length"])
+        assert int(row["consensus_length"]) == len(row["consensus_sequence"])
+        seed = output / "seed_msa" / f"{row['family_id']}.sto.gz"
+        if skip_refine:  # recruit-only builds no seed and runs no convergence test
+            assert row["seed_msa_size"] == "" and not seed.exists()
+            assert row["converged"] == ""
+        else:
+            with pyhmmer.easel.MSAFile(seed) as handle:
+                assert int(row["seed_msa_size"]) == len(handle.read().names)
+    with (output / "9_updated_delta.csv").open() as handle:
+        converged = {row["converged"] for row in csv.DictReader(handle)}
+    assert (converged == {""}) if skip_refine else (converged <= {"True", "False"})
     for directory in ("full_msa",) if skip_refine else ("seed_msa", "full_msa"):
         for path in (output / directory).iterdir():
             with pyhmmer.easel.MSAFile(path) as handle:
@@ -751,8 +763,8 @@ def test_stats_file_matches_aggregates(
     )
     assert stats["histograms"] == {
         "full_msa_size": histogram_of(int(row["full_msa_size"]) for row in metadata),
-        "model_length": histogram_of(len(row["consensus"]) for row in metadata),
-        "representative_length": histogram_of(int(row["length"]) for row in metadata),
+        "model_length": histogram_of(len(row["consensus_sequence"]) for row in metadata),
+        "representative_length": histogram_of(int(row["rep_length"]) for row in metadata),
         "model_length_change": histogram_of(
             int(row["model_length_after"]) - int(row["model_length_before"]) for row in delta
         ),

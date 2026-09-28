@@ -75,7 +75,14 @@ FAMILY_DIRECTORIES = ("seed_msa", "full_msa", "hmm", "rf")
 SLICE_SUFFIX = re.compile(r"(.+)/(\d+)-(\d+)")
 # Header rows for the two per-chunk CSVs, written by `main` before any result. Column
 # order is the order `emit_family` writes, and must be changed with it.
-METADATA_HEADER = "family_id,full_msa_size,protein,region,length,sequence,consensus,converged\n"
+# Family scalars first, then the representative, the two lengths, and the two long strings
+# last, so a row stays readable in a terminal. `seed_msa_size` is empty when no seed was
+# built and `converged` when nothing was tested for convergence: both mean a recruit-only
+# update.
+METADATA_HEADER = (
+    "family_id,converged,seed_msa_size,full_msa_size,"
+    "rep_protein,rep_region,rep_length,consensus_length,rep_sequence,consensus_sequence\n"
+)
 DISCARDED_HEADER = "representative,reason,value\n"
 # The per-run summary a MultiQC module parses from another repository, so a breaking change
 # to its shape must bump this. Only flags that change results are recorded: paths, --cpus,
@@ -737,7 +744,8 @@ class Family:
     full_msa_num_seqs: int = 0
     discard_reason: str = ""
     discard_value: int | float = 0.0
-    ever_converged: bool = False
+    # `None` for a recruit-only update, which runs no convergence test; written as empty.
+    ever_converged: bool | None = False
     # Set only by `update_families`, whose families start with no cluster to be scored
     # against: the first round's own recruits become that yardstick. `advance` clears it
     # after using it, so only round 1 adopts. `generate_families` never sets it -- its
@@ -1068,6 +1076,7 @@ def emit_family(
             raise ValueError("successful seed MSA has no RF reference annotation")
         renumbered_seed = renumber_msa(seed_msa.textize(), family_name, indexed)
     renumbered_full = renumber_msa(full_msa, family_name, indexed)
+    seed_msa_size = "" if renumbered_seed is None else len(renumbered_seed.names)
     # Checked here rather than left to the row loop's `zip(strict=True)`: that loop runs
     # after the shared handles have been appended to, so a raise there would put this
     # representative in `successful` and then, through the re-emit, in `discarded` too.
@@ -1138,10 +1147,11 @@ def emit_family(
                 # than a `csv.writer` row so the always-quoted convention holds: under
                 # `QUOTE_MINIMAL` every ordinary name would lose its quotes.
                 quoted_protein = protein.replace('"', '""')
+                converged = "" if family.ever_converged is None else family.ever_converged
                 writers.family_metadata.write(
-                    f'{family_id},{family.full_msa_num_seqs},"{quoted_protein}",'
-                    f"{region},{len(residues)},{residues},{final_hmm.consensus},"
-                    f"{family.ever_converged}\n"
+                    f"{family_id},{converged},{seed_msa_size},{family.full_msa_num_seqs},"
+                    f'"{quoted_protein}",{region},{len(residues)},{final_hmm.M},'
+                    f"{residues},{final_hmm.consensus}\n"
                 )
                 # `family_name`, not a second `f"{chunk}_{id}"`: with a preserved name and
                 # an unrelated `--chunk_id` that reconstruction produced `9_1_7`, breaking
@@ -1286,9 +1296,8 @@ def metadata_histograms(path: Path) -> dict[str, dict[str, int]]:
         rows = list(csv.DictReader(handle))
     return {
         "full_msa_size": histogram(row["full_msa_size"] for row in rows),
-        # One consensus residue per match state, so this is the emitted model's length.
-        "model_length": histogram(str(len(row["consensus"])) for row in rows),
-        "representative_length": histogram(row["length"] for row in rows),
+        "model_length": histogram(row["consensus_length"] for row in rows),
+        "representative_length": histogram(row["rep_length"] for row in rows),
     }
 
 
