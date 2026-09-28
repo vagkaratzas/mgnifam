@@ -28,7 +28,7 @@ One file per chunk, so flat in the output root:
 | `<chunk>_discarded.csv` | one row per discarded cluster |
 | `<chunk>_converged.txt` | ids of successful families that converged naturally |
 | `<chunk>_stats.json` | run summary for [MultiQC](#multiqc); present only after a completed run |
-| `<chunk>.log` | run log |
+| `<chunk>.log` | run log: a line per batch and round, and a line per family per stage with its duration |
 
 Family ids are a 1-based rank among *successful* families, in cluster-file order.
 

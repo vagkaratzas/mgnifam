@@ -292,6 +292,65 @@ def test_soft_masked_fasta_is_normalised_at_the_fetch_boundary(tmp_path: Path) -
         assert gf.parse_protein_name("prot_101_117", "MKTAY-laa", sequences) == "prot/101-108"
 
 
+def test_indexed_sequences_read_each_name_once_until_cleared() -> None:
+    """The memo serves repeat lookups, including an empty record, until `clear`.
+
+    A miss and an index mismatch must not be memoised: the first would turn a later
+    lookup's `KeyError` into a stale answer, the second would bypass the SSI guard.
+    """
+    reads: Counter[str] = Counter()
+
+    class CountingIndex(dict[str, pyhmmer.easel.TextSequence]):
+        def __getitem__(self, name: str) -> pyhmmer.easel.TextSequence:
+            reads[name] += 1
+            return super().__getitem__(name)
+
+    index = CountingIndex(
+        wanted=pyhmmer.easel.TextSequence(name="wanted", sequence="mkt"),
+        empty=pyhmmer.easel.TextSequence(name="empty", sequence=""),
+        stale=pyhmmer.easel.TextSequence(name="other", sequence="AAAA"),
+    )
+    sequences = gf.IndexedSequences(SimpleNamespace(indexed=index))  # type: ignore[arg-type]
+
+    for _ in range(2):
+        assert sequences.get("wanted") == gf.Sequence("wanted", "MKT")
+        assert sequences.get("empty") == gf.Sequence("empty", "")
+        assert sequences.get("absent", missing_ok=True) is None
+        with pytest.raises(gf.IndexMismatchError):
+            sequences.get("stale")
+    assert reads == {"wanted": 1, "empty": 1, "absent": 2, "stale": 2}
+
+    sequences.clear()
+    assert sequences.cache == {}
+    sequences.get("wanted")
+    assert reads["wanted"] == 2
+
+
+def test_each_record_is_read_once_per_batch_and_the_memo_is_bounded(
+    tmp_path: Path,
+    fixture_directory: Path,
+    small_fasta: Path,
+    shared_index: Path,
+    index_reads: SimpleNamespace,
+) -> None:
+    """Issue #17: every pass over a family used to re-read its records from the index.
+
+    `index_reads` fails on the second read of a name within a batch. The clear must run
+    once per batch after the emit loop: omitted, the memo spans the chunk; moved to the
+    batch start, it outlives the last batch.
+    """
+    clusters = fixture_directory / "clustering.tsv"
+    output = run_pipeline(
+        tmp_path, cli_args(clusters, small_fasta, fasta_index=shared_index, batch_size=1)
+    )
+
+    assert len(index_reads.clears) == len(gf.load_clusters(clusters)) > 1
+    [indexed] = index_reads.instances
+    assert indexed.cache == {}
+    assert index_reads.gets > index_reads.reads > 0
+    assert "stage=the exit branch state=" in (output / "chunk.log").read_text()
+
+
 def text_msa(names: list[str], sequences: list[str], reference: str) -> pyhmmer.easel.TextMSA:
     msa = pyhmmer.easel.TextMSA(
         sequences=[

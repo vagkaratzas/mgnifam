@@ -240,8 +240,20 @@ def fetch_indexed_sequence(
 
 
 class IndexedSequences:
+    """Database records by name, read through the SSI index and memoised for one batch.
+
+    A record is needed several times per family: every round's `filter_hits`, the exit
+    branch's `filter_hits`, and `renumber_msa` for each alignment row -- and once per
+    reported domain within each of those. Every read is a random seek, in single-threaded
+    Python, so on families of ~150k members the re-reads alone took hours. Both `main`s
+    call `clear` after each batch's emit loop, so memory is bounded by one batch's
+    recruits and scales with `--batch_size`.
+    """
+
     def __init__(self, sequence_file: pyhmmer.easel.SequenceFile) -> None:
         self.indexed = sequence_file.indexed
+        # ponytail: unbounded within a batch; an LRU only if one batch outgrows memory.
+        self.cache: dict[str, str] = {}
 
     def get(self, name: str, *, missing_ok: bool = False) -> Sequence | None:
         """Fetch a database record, upper-cased.
@@ -255,14 +267,24 @@ class IndexedSequences:
         every consumer of a database sequence goes through this method. Nothing is lost,
         because both alignment paths digitize before writing and Easel's digital
         alphabet has no case.
+
+        The memo holds plain strings, never pyhmmer objects. A name is verified against
+        the index on its first read; a missing name is not memoised.
         """
-        try:
-            fetched = fetch_indexed_sequence(self.indexed, name)
-        except KeyError:
-            if missing_ok:
-                return None
-            raise
-        return Sequence(name, fetched.sequence.upper())
+        sequence = self.cache.get(name)
+        if sequence is None:  # a memoised empty record is "", which is not None
+            try:
+                fetched = fetch_indexed_sequence(self.indexed, name)
+            except KeyError:
+                if missing_ok:
+                    return None
+                raise
+            sequence = self.cache[name] = fetched.sequence.upper()
+        return Sequence(name, sequence)
+
+    def clear(self) -> None:
+        """Drop the memo; called once per batch, after its families are written."""
+        self.cache.clear()
 
 
 def run_initial_msa(
@@ -912,7 +934,11 @@ def family_guard(family: Family, logger: logging.Logger, stage: str) -> Generato
     Only `Exception` is caught: KeyboardInterrupt and SystemExit must still stop the run.
     The traceback goes to the chunk log, because a discard line is a summary and the
     reason a family blew up is a bug report.
+
+    Every stage also logs one progress line with its duration, on every exit path. The
+    batch-level lines alone left hours of per-family work between them silent.
     """
+    started = time.monotonic()
     try:
         yield
     except ChunkCorrupted:
@@ -921,6 +947,14 @@ def family_guard(family: Family, logger: logging.Logger, stage: str) -> Generato
         logger.exception("family %s failed during %s", family.representative, stage)
         # Commas would split the discarded-clusters CSV; `stage` is caller-supplied text.
         family.discard(f"{INTERNAL_ERROR_PREFIX}{stage}".replace(",", " "), 0.0)
+    finally:
+        logger.info(
+            "family=%s stage=%s state=%s took=%.1fs",
+            family.representative,
+            stage,
+            family.state.name,
+            time.monotonic() - started,
+        )
 
 
 def write_delta(writers: Writers, delta_row: str | None) -> None:
@@ -1524,6 +1558,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                         # cannot record its own failure and must exit 1 rather than claim
                         # coherent output.
                         emit_family(family, success_count, options.chunk_id, writers)
+                indexed_sequences.clear()
                 processed += len(active)
                 crashed += sum(
                     1

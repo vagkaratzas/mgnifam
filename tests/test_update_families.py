@@ -774,3 +774,26 @@ def test_a_converged_then_discarded_family_is_not_counted_as_converged(tmp_path:
 
     families = update_families.update_stats(tmp_path, options, 0)["families"]
     assert (families["successful"], families["discarded"], families["converged"]) == (2, 1, 1)
+
+
+@pytest.mark.parametrize("skip_refine", [True, False])
+def test_each_record_is_read_once_per_batch_and_the_memo_is_bounded(
+    tmp_path: Path,
+    fixture_directory: Path,
+    v2_fasta: Path,
+    index_reads: SimpleNamespace,
+    skip_refine: bool,
+) -> None:
+    """Issue #17: recruit, exit branch and renumbering each re-read every record.
+
+    `index_reads` fails on the second read of a name within a batch. Fourteen families in
+    batches of six gives three batches, so a missing or misplaced clear is observable.
+    """
+    extra = ["--batch_size", "6", *(["--skip_refine"] if skip_refine else [])]
+    output = update(fixture_directory / "mgnifams_v2.hmm.lib.gz", v2_fasta, tmp_path, *extra)
+
+    assert len(index_reads.clears) == 3
+    [indexed] = index_reads.instances
+    assert indexed.cache == {}
+    assert index_reads.gets > index_reads.reads > 0
+    assert "stage=the exit branch state=" in (output / "9_updated.log").read_text()
