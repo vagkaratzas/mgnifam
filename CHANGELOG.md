@@ -17,6 +17,8 @@ resolution may change results.
 
 ### Added
 
+- **Seed MSA size histogram** in the MultiQC summary, next to the full-MSA size one.
+  `update_families --skip_refine` builds no seed, so it leaves the histogram empty.
 - **Documentation site** at https://vagkaratzas.github.io/mgnifam/, with guides for both
   commands, the output reference, and an API reference generated from the docstrings. The
   README is now an overview that links into it.
@@ -44,8 +46,11 @@ resolution may change results.
   ```
 - **Breaking:** under `update_families --skip_refine`, `converged` is now empty instead of
   `False` in both the metadata and delta CSVs: that mode runs no convergence test.
-  `seed_msa_size` is empty there too, as no seed is built. The stats file still counts such
-  families as not converged.
+  `seed_msa_size` is empty there too, as no seed is built. The stats file reports
+  `converged` as `null` for such a run rather than `0`.
+- **Breaking:** the MultiQC summary is renamed to `<chunk>_mgnifam_stats.json` (and
+  `<chunk>_updated_mgnifam_stats.json`), so it can be found by file name alone. A rerun
+  does not remove a summary left under the old name.
 
 ## [3.1.0] - 2026/09/21
 

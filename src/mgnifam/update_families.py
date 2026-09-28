@@ -262,7 +262,7 @@ def validate_output_paths(options: argparse.Namespace, names: set[str]) -> None:
             "converged.txt",
             "reps.fasta.gz",
             "delta.csv",
-            "stats.json",
+            "mgnifam_stats.json",
         )
     )
     destinations.append(root / f"{prefix}.log")
@@ -406,6 +406,7 @@ def update_stats(root: Path, options: argparse.Namespace, crashed: int) -> dict[
 
     `converged` counts successful families only: `discard` keeps `ever_converged`, so a
     family that converged and then failed `finish` still says `True` in its delta row.
+    It is `null` under `--skip_refine`, which tests nothing for convergence.
     """
     prefix = f"{options.chunk_id}_updated"
     with (root / f"{prefix}_delta.csv").open(newline="", encoding="utf-8") as handle:
@@ -417,7 +418,9 @@ def update_stats(root: Path, options: argparse.Namespace, crashed: int) -> dict[
         "input": len(rows),
         "successful": len(successful),
         "discarded": len(rows) - len(successful),
-        "converged": sum(row["converged"] == "True" for row in successful),
+        "converged": None
+        if options.skip_refine
+        else sum(row["converged"] == "True" for row in successful),
         "crashed": crashed,
     }
     payload["discard_reasons"] = dict(sorted(reasons.items()))
@@ -441,7 +444,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
         options.batch_size = 2 * options.cpus
 
     root = options.output_dir
-    stats_path = root / f"{options.chunk_id}_updated_stats.json"
+    stats_path = root / f"{options.chunk_id}_updated_mgnifam_stats.json"
     prepare_output_directories(root, [name for name, _ in models], stats_path)
     index_path = resolve_index(options, root)
     logger = configure_logger(root / f"{options.chunk_id}_updated.log")

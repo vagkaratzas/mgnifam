@@ -1266,7 +1266,7 @@ def prepare_output_directories(root: Path, chunk: str) -> None:
     The stats file goes first: it marks a completed run, and from here on the directory
     no longer holds one.
     """
-    (root / f"{chunk}_stats.json").unlink(missing_ok=True)
+    (root / f"{chunk}_mgnifam_stats.json").unlink(missing_ok=True)
     for directory in FAMILY_DIRECTORIES:
         (root / directory).mkdir(parents=True, exist_ok=True)
     # An exact numeric suffix, not a `<chunk>_*` glob: chunk "foo" would otherwise
@@ -1295,6 +1295,8 @@ def metadata_histograms(path: Path) -> dict[str, dict[str, int]]:
     with path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     return {
+        # Empty for a recruit-only update, which builds no seed: left out, not counted as 0.
+        "seed_msa_size": histogram(row["seed_msa_size"] for row in rows if row["seed_msa_size"]),
         "full_msa_size": histogram(row["full_msa_size"] for row in rows),
         "model_length": histogram(row["consensus_length"] for row in rows),
         "representative_length": histogram(row["rep_length"] for row in rows),
@@ -1427,7 +1429,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
         options.batch_size = 2 * options.cpus
 
     root = options.output_dir
-    stats_path = root / f"{options.chunk_id}_stats.json"
+    stats_path = root / f"{options.chunk_id}_mgnifam_stats.json"
     guard_stats_path(stats_path, (options.clusters_chunk, options.fasta_file, options.fasta_index))
     prepare_output_directories(root, options.chunk_id)
     index_path = resolve_index(options, root)
