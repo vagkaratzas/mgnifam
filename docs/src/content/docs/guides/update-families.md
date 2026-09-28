@@ -42,7 +42,7 @@ artifact paths and into CSV fields, and it arrives from a file this tool did not
 Per-family artifacts land in the same `hmm/`, `full_msa/`, `seed_msa/` and `rf/`
 directories, named by family. Aggregates are `<chunk>_updated_*`: `families.tsv`,
 `metadata.csv`, `discarded.csv`, `successful.txt`, `converged.txt`, `reps.fasta.gz`,
-`delta.csv`, `stats.json` (see [MultiQC](/mgnifam/reference/outputs/#multiqc)), and `<chunk>_updated.log`.
+`delta.csv`, `mgnifam_stats.json` (see [MultiQC](/mgnifam/reference/outputs/#multiqc)), and `<chunk>_updated.log`.
 
 `<chunk>_updated_delta.csv` is what an update run is *for* — one row per family, whether it
 survived or not:

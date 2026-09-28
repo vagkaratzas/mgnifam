@@ -27,7 +27,7 @@ One file per chunk, so flat in the output root:
 | `<chunk>_successful.txt` | representatives that produced a family |
 | `<chunk>_discarded.csv` | one row per discarded cluster |
 | `<chunk>_converged.txt` | ids of successful families that converged naturally |
-| `<chunk>_stats.json` | run summary for [MultiQC](#multiqc); present only after a completed run |
+| `<chunk>_mgnifam_stats.json` | run summary for [MultiQC](#multiqc); present only after a completed run |
 | `<chunk>.log` | run log: a line per batch and round, and a line per family per stage with its duration |
 
 Family ids are a 1-based rank among *successful* families, in cluster-file order.
@@ -71,9 +71,10 @@ stopped:
 
 ## MultiQC
 
-Every completed run (exit `0` or `3`) writes one `<chunk>_stats.json`: counts of families
-in, successful, discarded, converged and crashed; discard reasons; and `{value: count}`
-histograms of full-MSA size, model length and representative length. It is read back from
+Every completed run (exit `0` or `3`) writes one `<chunk>_mgnifam_stats.json`: counts of
+families in, successful, discarded, converged and crashed; discard reasons; and
+`{value: count}` histograms of seed-MSA size, full-MSA size, model length and
+representative length. It is read back from
 the chunk's own CSVs, so it never disagrees with them. One chunk is one MultiQC sample, and
 MultiQC merges a pipeline's chunks into one report.
 
@@ -84,8 +85,9 @@ it is byte-identical across `--cpus`, `--batch_size` and `--prefetch_targets` li
 other outputs. `"tool": "mgnifam"` is its first key, and `schema_version` changes only
 when its shape does.
 
-`update_families` writes the same summary as `<chunk>_updated_stats.json`, read back from
-its delta and metadata CSVs. It adds `skip_refine` to the recorded flags and three
+`update_families` writes the same summary as `<chunk>_updated_mgnifam_stats.json`, read
+back from its delta and metadata CSVs. It adds `skip_refine` to the recorded flags and three
 histograms: `model_length_change` (after minus before), `rounds_run` and `retention`.
 Retention keys are the exact `delta.csv` values, and a family with no retention is left
-out. In both files `converged` counts successful families only.
+out. In both files `converged` counts successful families only. Under `--skip_refine` it is
+`null`, since nothing is tested for convergence, and `seed_msa_size` is empty.

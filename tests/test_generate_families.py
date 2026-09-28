@@ -1207,7 +1207,7 @@ def test_console_script_returns_three_after_a_contained_family_crash(
     assert result.returncode == gf.EXIT_CRASHED_FAMILIES
     output = run_directory / "output"
     assert "crashed=1" in (output / "chunk.log").read_text()
-    stats = json.loads((output / "chunk_stats.json").read_text())
+    stats = json.loads((output / "chunk_mgnifam_stats.json").read_text())
     assert (stats["exit_status"], stats["families"]["crashed"]) == (gf.EXIT_CRASHED_FAMILIES, 1)
     successful = (output / "chunk_successful.txt").read_text().splitlines()
     discarded = csv_rows(output / "chunk_discarded.csv", gf.DISCARDED_HEADER)
@@ -1270,7 +1270,7 @@ def test_shared_append_failure_is_fatal_not_a_contained_discard(
     run_directory = tmp_path / "corrupt"
     # A previous run's summary must not outlive the output it described.
     (run_directory / "output").mkdir(parents=True)
-    (run_directory / "output" / "chunk_stats.json").write_text("{}\n")
+    (run_directory / "output" / "chunk_mgnifam_stats.json").write_text("{}\n")
     with pytest.raises(SystemExit) as excinfo:
         run_pipeline(
             run_directory,
@@ -1283,7 +1283,7 @@ def test_shared_append_failure_is_fatal_not_a_contained_discard(
     discarded = csv_rows(output / "chunk_discarded.csv", gf.DISCARDED_HEADER)
     assert all(gf.INTERNAL_ERROR_PREFIX not in row for row in discarded)
     assert "chunk output is corrupted" in (output / "chunk.log").read_text()
-    assert not (output / "chunk_stats.json").exists()
+    assert not (output / "chunk_mgnifam_stats.json").exists()
 
 
 def test_family_guard_contains_only_exceptions() -> None:
@@ -1765,10 +1765,10 @@ def histogram_of(values: object) -> dict[str, int]:
 
 def test_stats_file_matches_aggregates(v2_output: Path) -> None:
     """The MultiQC summary is a projection of the chunk's own CSVs, nothing more."""
-    stats = json.loads((v2_output / "v2_stats.json").read_text())
+    stats = json.loads((v2_output / "v2_mgnifam_stats.json").read_text())
     assert next(iter(stats)) == "tool"
     # Readable by whoever can read the CSVs beside it: the umask applies, not a forced 0600.
-    mode = (v2_output / "v2_stats.json").stat().st_mode
+    mode = (v2_output / "v2_mgnifam_stats.json").stat().st_mode
     assert mode == (v2_output / "v2_metadata.csv").stat().st_mode
     assert {key: stats[key] for key in ("tool", "schema_version", "version", "command")} == {
         "tool": "mgnifam",
@@ -1795,6 +1795,7 @@ def test_stats_file_matches_aggregates(v2_output: Path) -> None:
     }
     assert stats["discard_reasons"] == dict(Counter(reasons))
     assert stats["histograms"] == {
+        "seed_msa_size": histogram_of(int(row["seed_msa_size"]) for row in rows),
         "full_msa_size": histogram_of(int(row["full_msa_size"]) for row in rows),
         "model_length": histogram_of(len(row["consensus_sequence"]) for row in rows),
         "representative_length": histogram_of(int(row["rep_length"]) for row in rows),
@@ -1816,7 +1817,7 @@ def test_empty_chunk_writes_an_all_zero_summary(
         tmp_path / "run", cli_args(clusters, small_fasta, fasta_index=shared_index)
     )
 
-    stats = json.loads((output / "chunk_stats.json").read_text())
+    stats = json.loads((output / "chunk_mgnifam_stats.json").read_text())
     assert set(stats["families"].values()) == {0}
     assert stats["discard_reasons"] == {}
     assert all(counts == {} for counts in stats["histograms"].values())
@@ -1825,13 +1826,15 @@ def test_empty_chunk_writes_an_all_zero_summary(
 def test_stats_path_cannot_overwrite_an_input(
     tmp_path: Path, fixture_directory: Path, small_fasta: Path, shared_index: Path
 ) -> None:
-    clusters = tmp_path / "output" / "chunk_stats.json"
+    clusters = tmp_path / "output" / "chunk_mgnifam_stats.json"
     clusters.parent.mkdir()
     clusters.write_bytes((fixture_directory / "clustering.tsv").read_bytes())
     before = clusters.read_bytes()
 
     with contextlib.chdir(tmp_path), pytest.raises(ValueError, match="overlaps an input"):
-        gf.main(cli_args(Path("output/chunk_stats.json"), small_fasta, fasta_index=shared_index))
+        gf.main(
+            cli_args(Path("output/chunk_mgnifam_stats.json"), small_fasta, fasta_index=shared_index)
+        )
     assert clusters.read_bytes() == before
 
 
@@ -1856,6 +1859,6 @@ def test_failed_stats_commit_exits_one_and_leaves_no_stats(
 
     assert excinfo.value.code == 1
     output = run_directory / "output"
-    assert not (output / "chunk_stats.json").exists()
+    assert not (output / "chunk_mgnifam_stats.json").exists()
     assert not list(output.glob("*.tmp"))
     assert "stats commit failed" in (output / "chunk.log").read_text()
