@@ -13,7 +13,10 @@ dependency versions pinned in `uv.lock` (`uv sync --frozen`). Installing from Py
 pyhmmer, pyfamsa and pytrimal within their declared ranges instead, and a different
 resolution may change results.
 
-## [Unreleased]
+## [4.0.0] - 2026/09/28
+
+A major version because two outputs change shape: the metadata CSV's columns are renamed
+and reordered, and the MultiQC summary is renamed to `<chunk>_mgnifam_stats.json`.
 
 ### Added
 
