@@ -32,6 +32,20 @@ resolution may change results.
   member, which dominated the exit branch on families of ~150k members. Outputs are
   byte-identical. The sequences are kept in memory until the batch is written, so peak
   memory now also grows with `--batch_size`.
+- **Breaking:** `<chunk>_metadata.csv` (and `<chunk>_updated_metadata.csv`) gains
+  `seed_msa_size` and `consensus_length`, prefixes the representative's columns with `rep_`
+  (`protein`, `region`, `length`, `sequence` become `rep_protein`, `rep_region`,
+  `rep_length`, `rep_sequence`), renames `consensus` to `consensus_sequence`, and reorders
+  them: family values first, then the representative and model lengths, then the two
+  sequences.
+
+  ```
+  family_id,converged,seed_msa_size,full_msa_size,rep_protein,rep_region,rep_length,consensus_length,rep_sequence,consensus_sequence
+  ```
+- **Breaking:** under `update_families --skip_refine`, `converged` is now empty instead of
+  `False` in both the metadata and delta CSVs: that mode runs no convergence test.
+  `seed_msa_size` is empty there too, as no seed is built. The stats file still counts such
+  families as not converged.
 
 ## [3.1.0] - 2026/09/21
 

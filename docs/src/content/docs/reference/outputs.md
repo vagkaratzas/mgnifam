@@ -36,15 +36,21 @@ Both CSVs carry a header row, so they load with `pandas.read_csv` as they are:
 
 | file | columns |
 |---|---|
-| `<chunk>_metadata.csv` | `family_id,full_msa_size,protein,region,length,sequence,consensus,converged` |
+| `<chunk>_metadata.csv` | `family_id,converged,seed_msa_size,full_msa_size,rep_protein,rep_region,rep_length,consensus_length,rep_sequence,consensus_sequence` |
 | `<chunk>_discarded.csv` | `representative,reason,value` |
 
-`protein` is quoted, with embedded quotes doubled; a `protein` or `representative`
+`seed_msa_size` and `full_msa_size` count the sequences in the family's two alignments.
+Under `update_families --skip_refine`, `seed_msa_size` and `converged` are empty: that mode
+builds no seed and runs no convergence test.
+The `rep_` columns describe the representative. `consensus_length` is the model's length
+in match states, one per `consensus_sequence` residue.
+
+`rep_protein` is quoted, with embedded quotes doubled; a `rep_protein` or `representative`
 containing a comma or a quote is escaped, so both files parse with a standard CSV reader.
-Literal slashes stay in `protein`, including punctuation after a slash: `protein/v1,variant`
+Literal slashes stay in `rep_protein`, including punctuation after a slash: `protein/v1,variant`
 is one protein field. Only a trailing coordinate range spanning the emitted sequence is
-separated into `region`.
-`region` is `<start>-<end>` on the parent protein, or `-` when the
+separated into `rep_region`.
+`rep_region` is `<start>-<end>` on the parent protein, or `-` when the
 representative spans a whole unsliced record. Those two columns together are the
 `<base>/<start>-<end>` spelling from [Sequence names](/mgnifam/guides/generate-families/#sequence-names), which is also how `<chunk>_reps.fasta` names its
 records. The representative is the highest-scoring

@@ -491,6 +491,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
                         representative=name,
                         members=[],
                         adopt_recruits_as_members=not options.skip_refine,
+                        ever_converged=None if options.skip_refine else False,
                     )
                     for name, _ in batch
                 ]
