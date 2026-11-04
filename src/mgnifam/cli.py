@@ -1,8 +1,9 @@
 """Command dispatch for the `mgnifam` executable.
 
-Every capability is a subcommand -- `mgnifam generate_families ...` -- so that later
-additions such as `remove_redundant` or `merge_families` need only a new entry in
-`COMMANDS` and a module exposing a `main(argv)`.
+Every capability is a subcommand -- `mgnifam generate_families ...`,
+`mgnifam update_families ...`, `mgnifam compute_clans ...` -- so that later additions such
+as `remove_redundant` or `merge_families` need only a new entry in `COMMANDS` and a module
+exposing a `main(argv)`.
 
 Subcommands own their own argument parsers rather than registering with an
 `add_subparsers` group. Each remains directly callable as `module.main(argv)`, which
@@ -14,9 +15,10 @@ import argparse
 import sys
 from collections.abc import Callable, Sequence
 
-from mgnifam import __version__, generate_families, update_families
+from mgnifam import __version__, compute_clans, generate_families, update_families
 
 COMMANDS: dict[str, Callable[[Sequence[str]], None]] = {
+    "compute_clans": compute_clans.main,
     "generate_families": generate_families.main,
     "update_families": update_families.main,
 }
