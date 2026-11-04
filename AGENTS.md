@@ -234,12 +234,14 @@ parsers rather than registering with `add_subparsers`, so each stays directly ca
 testable without the dispatcher. `remove_redundant` and `merge_families` are expected here.
 
 `update_families` imports the algorithm out of `generate_families` and owns only its own
-`main()` loop. **When a third command lands, extract the shared machinery into a
-`_pipeline.py` and make all three thin.** Not before: the shape three commands share is
-worth observing rather than guessing, and the docs (`guides/generate-families.md` and
+`main()` loop. **When a third command that shares the HMM family pipeline lands (such as
+`remove_redundant` or `merge_families`), extract the shared machinery into a `_pipeline.py`
+and make the pipeline commands thin.** Not before: the shape they share is worth observing
+rather than guessing, and the docs (`guides/generate-families.md` and
 `reference/python-api.mdx`) document
 `from mgnifam.generate_families import build_ssi_index` as a public entry point that a move
-would break.
+would break. `compute_clans` does not count: it uses none of the pipeline, only a few
+small helpers (`write_stats`, `configure_logger`, the name patterns), which it imports.
 
 ## Before you change anything in `update_families.py`
 
@@ -280,6 +282,47 @@ would break.
 - Round 1 cannot converge, which is why refine mode needs no stored seed MSA. If that ever
   changes, `emit_family`'s hand build has nothing to build from on a converged-at-round-1
   family.
+
+## Before you change anything in `compute_clans.py`
+
+- **Integer-exact, so order-free.** Every sum (shared proteins, residue intersection,
+  per-family residues and proteins) is an integer, added in any order, so outputs do not
+  depend on `--cpus`, `--worker_memory_mb`, how units or batches are cut, input order, or
+  `PYTHONHASHSEED` (protein keys are blake2b, never `hash()`). Thresholds are `Fraction`s
+  compared as `num * q >= p * den`; never compare a float ratio. Guards:
+  `test_random_inputs_match_a_position_set_oracle` (brute-force position sets),
+  `test_outputs_do_not_depend_on_execution_settings`,
+  `test_outputs_do_not_depend_on_the_hash_seed`.
+- **Widen before subtracting.** Coordinates are stored uint32 and must be promoted to
+  int64 before `end + 1` or `min(e) - max(s) + 1`. The overflow bound on total covered
+  residues and rows is checked once, before Phase B, with `if ... raise`. Guards:
+  `test_largest_coordinate_is_accepted`, `test_overflow_guard_is_explicit` (also under
+  `python -O`).
+- **Every pair is canonicalised to `a < b` before `pair_index`.** The overlap sweep runs in
+  start order, not family order. Guard: `test_pair_orientation_does_not_follow_sweep_order`.
+- **The overlap sweep relies on merged intervals.** One family's merged intervals on a
+  protein are disjoint and non-adjacent, so the sweep never pairs a family with itself and
+  emits only intervals that actually overlap. Do not feed it unmerged rows.
+- **Every allocation is bounded by the budget except one protein's own rows.** Units are
+  sized by member *and* FASTA-length counts and split by hash sub-range. Both emission
+  streams are virtual arrays cut at any element, so a hub protein cannot exceed a batch.
+  A protein whose own rows exceed the budget exits 1. Guard:
+  `test_work_is_bounded_and_split_anywhere`.
+- **Nothing touches the output tree before Phase C.** Scratch is a fresh `mkdtemp` child of
+  `--tmp_dir`, and only that child is ever removed. The log runs in scratch until Phase C.
+  Validation errors exit 2 and leave a previous summary in place. Phase C removes the
+  summary first and writes it last. Guards:
+  `test_invalid_input_leaves_the_output_tree_alone`, `test_output_aliases_are_rejected`,
+  `test_failure_while_writing_leaves_no_summary`.
+- **No name set is held in memory.** Whole-protein lengths come from bucketed FASTA-length
+  runs joined per unit on the full 128-bit key. A missing name is recovered only on the
+  error path, by rescanning the inputs.
+- **The summary is not the MultiQC stats file.** `<chunk>_clans_summary.json` deliberately
+  has no `"tool"` key, so the external MultiQC module never parses it. Adding one is a
+  coordinated change with that module.
+- Workers are started with `forkserver`, so a monkeypatched module constant does not reach
+  them. Tests change work sizes through `sizes_for`, which the parent computes and passes
+  down, or run with `-p 1`.
 
 ## Docs that must move together
 

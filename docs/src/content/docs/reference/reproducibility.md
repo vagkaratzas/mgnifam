@@ -11,6 +11,10 @@ pyhmmer, pyfamsa and pytrimal decide hit retention, alignment and serialised byt
 (`<chunk>.log` carries timestamps and is excluded from that contract. HMM files omit the
 `DATE` and `COM` lines, which are otherwise a wall-clock and an `argv` dump.)
 
+`compute_clans` uses no aligner or HMM library. Its edges, clans and summary are
+integer-exact and byte-identical across `--cpus`, `--worker_memory_mb`, `--tmp_dir`, input
+order and `PYTHONHASHSEED`, on any dependency resolution.
+
 > **The old pipeline's recruitment depended on how many CPUs it was given.** pyhmmer
 > selects `parallel="targets"` whenever the query count is below the CPU count, which was
 > every call in the old family-at-a-time loop. Each worker runs its own `Pipeline` over a
