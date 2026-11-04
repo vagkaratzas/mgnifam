@@ -4,7 +4,8 @@ description: Every file mgnifam writes, its exit status, and the MultiQC summary
 ---
 
 These are the outputs of `generate_families`. `update_families` writes its own set, described
-in [Updating families](/mgnifam/guides/update-families/#update-outputs).
+in [Updating families](/mgnifam/guides/update-families/#update-outputs), and `compute_clans`
+its own in [Computing clans](/mgnifam/guides/compute-clans/#outputs).
 
 Written under `--output_dir` (default: `output`), keyed by `--chunk_id`:
 

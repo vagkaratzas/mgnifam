@@ -11,7 +11,7 @@ uv run pytest
 ```
 
 Read [`AGENTS.md`](https://github.com/vagkaratzas/mgnifam/blob/main/AGENTS.md) before
-changing `generate_families.py` or `update_families.py`: it lists the invariants each
+changing `generate_families.py`, `update_families.py` or `compute_clans.py`: it lists the invariants each
 module depends on and the test that guards each one.
 
 ## This site

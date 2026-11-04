@@ -69,8 +69,16 @@ mgnifam update_families \
     --fasta_file new_release.fa
 ```
 
-`--fasta_file` must be an **uncompressed** FASTA with unique sequence names. Pass every
-threshold explicitly on a production run.
+Group families into clans by how much their members cover the same residues:
+
+```bash
+mgnifam compute_clans \
+    --members output/1_families.tsv output/2_families.tsv \
+    --fasta_file mgnifams_input.fa
+```
+
+For `generate_families` and `update_families`, `--fasta_file` must be an **uncompressed**
+FASTA with unique sequence names. Pass every threshold explicitly on a production run.
 
 The documentation covers the rest:
 
@@ -78,6 +86,8 @@ The documentation covers the rest:
   input formats, sequence naming, every flag, and sharing one SSI index across chunks
 - [Updating families](https://vagkaratzas.github.io/mgnifam/guides/update-families/):
   `--skip_refine`, family identity, and retrying a chunk in place
+- [Computing clans](https://vagkaratzas.github.io/mgnifam/guides/compute-clans/): residue
+  overlap, clan thresholds, and sizing a release-scale run
 - [Outputs](https://vagkaratzas.github.io/mgnifam/reference/outputs/): every file, exit
   status, and the MultiQC summary
 - [Reproducibility](https://vagkaratzas.github.io/mgnifam/reference/reproducibility/):

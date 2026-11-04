@@ -34,6 +34,7 @@ export default defineConfig({
             { label: 'Installation', link: '/guides/installation/' },
             { label: 'Generating families', link: '/guides/generate-families/' },
             { label: 'Updating families', link: '/guides/update-families/' },
+            { label: 'Computing clans', link: '/guides/compute-clans/' },
           ],
         },
         {
