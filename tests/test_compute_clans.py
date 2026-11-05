@@ -397,7 +397,6 @@ def test_missing_lengths_survive_a_worker_boundary() -> None:
     [
         "A\tP/1-10\tx",
         "A",
-        "",
         "../x\tP/1-10",
         "A,B\tP/1-10",
         "A\tP/10-1",
@@ -526,6 +525,13 @@ def test_failure_before_writing_removes_the_summary_and_keeps_the_log(
     assert run(tmp_path, [members])[0] == 1
     assert not (root / "t_clans_summary.json").exists()
     assert "ResourceError: over budget" in (root / "t_clans.log").read_text()
+
+
+def test_blank_lines_are_skipped(tmp_path: Path) -> None:
+    members = tmp_path / "m.tsv"
+    members.write_text("A\tP/1-10\n\nB\tP/1-10\r\n\n\n")
+    code, root = run(tmp_path, [members])
+    assert code == 0 and edges(root)[("A", "B")][0] == "1"
 
 
 def test_a_full_scratch_disk_fails_before_the_pair_phase(

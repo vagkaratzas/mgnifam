@@ -295,6 +295,8 @@ def parse_members_task(task: Task, scratch: str, run_rows: int) -> MembersResult
     rows = bare_rows = 0
     for position, raw in task_lines(task):
         line = raw.rstrip(b"\r\n")
+        if not line:
+            continue  # blank lines, such as a trailing one left by concatenated TSVs
         family, tab, member = line.partition(b"\t")
         if not tab or not member or b"\t" in member:
             raise InputError(f"{location(task, position)}: expected 'family<TAB>member'")
