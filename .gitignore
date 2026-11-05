@@ -221,9 +221,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# serena LSP cache
-.serena/
-
 # Documentation site (docs/)
 node_modules/
 docs/dist/
