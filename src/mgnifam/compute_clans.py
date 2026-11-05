@@ -1090,7 +1090,8 @@ def write_outputs(
     count = len(names)
     n, residues = data["proteins_per_family"], data["residues_per_family"]
     shared, overlap = data["shared"], data["overlap"]
-    row_start = np.array([a * count - a * (a + 1) // 2 for a in range(count + 1)], np.int64)
+    rows = np.arange(count + 1, dtype=np.int64)
+    row_start = pair_index(rows, rows + 1, count)  # where each family's row of pairs begins
     clan_first: list[np.ndarray] = []
     clan_second: list[np.ndarray] = []
     clan_weight: list[np.ndarray] = []
