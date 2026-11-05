@@ -504,6 +504,11 @@ def test_failure_while_writing_leaves_no_summary(
     assert not (root / "t_clans_summary.json").exists()
 
 
+def test_a_killed_worker_fails_the_run_instead_of_hanging() -> None:
+    with cc.worker_pool(2) as imap, pytest.raises(cc.BrokenProcessPool):
+        list(imap(os._exit, [1]))
+
+
 def test_dispatcher_reaches_the_subcommand(capsys) -> None:
     with pytest.raises(SystemExit) as stop:
         cli.main(["compute_clans", "--help"])

@@ -48,6 +48,8 @@ import time
 from collections import Counter
 from collections.abc import Iterable, Iterator
 from collections.abc import Sequence as SequenceCollection
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -829,15 +831,30 @@ def validate_options(options: argparse.Namespace) -> Path:
 
 @contextlib.contextmanager
 def worker_pool(cpus: int, initializer: Any = None, initargs: tuple = ()) -> Iterator[Any]:
-    """`imap_unordered` over a process pool, or in-process for one cpu."""
+    """Unordered map over a process pool, or in-process for one cpu.
+
+    `ProcessPoolExecutor`, not `multiprocessing.Pool`: a worker killed by a signal (OOM,
+    SIGBUS) raises `BrokenProcessPool` instead of losing its task and hanging the parent.
+    """
     if cpus == 1:
         if initializer:
             initializer(*initargs)
         yield lambda function, items: map(function, items)
         return
     context = multiprocessing.get_context("forkserver")
-    with context.Pool(cpus, initializer=initializer, initargs=initargs) as pool:
-        yield lambda function, items: pool.imap_unordered(function, items)
+    pool = ProcessPoolExecutor(cpus, context, initializer=initializer, initargs=initargs)
+
+    def imap(function: Any, items: Iterable[Any]) -> Iterator[Any]:
+        pending = {pool.submit(function, item) for item in items}
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                yield future.result()
+
+    try:
+        yield imap
+    finally:
+        pool.shutdown(cancel_futures=True)
 
 
 def star(arguments: tuple) -> Any:
@@ -1164,7 +1181,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
         logger.error("%s", error)
         print(f"mgnifam compute_clans: error: {error}", file=sys.stderr)
         raise SystemExit(2) from None
-    except (ChunkCorrupted, ResourceError, OSError) as error:
+    except (ChunkCorrupted, ResourceError, BrokenProcessPool, OSError) as error:
         logger.exception("compute_clans failed; outputs must not be consumed")
         print(f"mgnifam compute_clans: {error}", file=sys.stderr)
         raise SystemExit(1) from None
