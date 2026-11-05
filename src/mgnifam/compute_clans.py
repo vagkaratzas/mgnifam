@@ -648,7 +648,7 @@ def plan_units(
     ranges are cut to it where possible, but only `unit_cost` can fail a run.
 
     Consecutive buckets are grouped by their actual counts. A bucket over budget is halved
-    by hash range, counted with `searchsorted` on the runs, down to a single hash value.
+    by hash range, counted with `key_range` on the runs, down to a single hash value.
     """
     shift = 64 - BUCKET_BITS
 
