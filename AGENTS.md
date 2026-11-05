@@ -313,9 +313,12 @@ small helpers (`write_stats`, `configure_logger`, the name patterns), which it i
 - **Nothing touches the output tree before Phase C.** Scratch is a fresh `mkdtemp` child of
   `--tmp_dir`, and only that child is ever removed. The log runs in scratch until Phase C.
   Validation errors exit 2 and leave a previous summary in place. Phase C removes the
-  summary first and writes it last. Guards:
+  summary first and writes it last. The one exception is an exit-1 failure before Phase C:
+  it removes a previous summary and copies the log out, so a stale result cannot pass for
+  this run's and the traceback survives scratch cleanup. Guards:
   `test_invalid_input_leaves_the_output_tree_alone`, `test_output_aliases_are_rejected`,
-  `test_failure_while_writing_leaves_no_summary`.
+  `test_failure_while_writing_leaves_no_summary`,
+  `test_failure_before_writing_removes_the_summary_and_keeps_the_log`.
 - **No name set is held in memory.** Whole-protein lengths come from bucketed FASTA-length
   runs joined per unit on the full 128-bit key. A missing name is recovered only on the
   error path, by rescanning the inputs.

@@ -94,9 +94,9 @@ sorts before `3`. Near-redundant pairs are counted, not removed: filter the edge
 
 The summary is written last and atomically, and only after the run has finished reading
 and checking every input. A run rejected for bad input (exit `2`) leaves the output
-directory exactly as it was, including a previous run's summary. A run that fails after
-that point (exit `1`) leaves no summary. So **a summary file means the edges and clans next
-to it are complete**. Edges, clans and summary are byte-identical across `--cpus`,
+directory exactly as it was, including a previous run's summary. A run that fails (exit
+`1`) leaves no summary, not even a previous run's, and keeps its log in the output
+directory. So **a summary file means the edges and clans next to it are complete**. Edges, clans and summary are byte-identical across `--cpus`,
 `--worker_memory_mb`, `--tmp_dir`, input order, how the input is split into files,
 compression and `PYTHONHASHSEED`. The log has timestamps and is not.
 

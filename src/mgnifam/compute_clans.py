@@ -1176,6 +1176,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
     scratch = Path(tempfile.mkdtemp(prefix="mgnifam_clans_", dir=parent))
     logger = configure_logger(scratch / "clans.log")
     started = time.monotonic()
+    log_moved = False
     try:
         logger.info(
             "start members=%d cpus=%d worker_memory_mb=%d scratch=%s",
@@ -1189,6 +1190,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
         options.output_dir.mkdir(parents=True, exist_ok=True)
         paths["summary"].unlink(missing_ok=True)
         move_log(logger, scratch / "clans.log", paths["log"])
+        log_moved = True
         payload = write_outputs(options, paths, data)
         logger.info("DONE. elapsed=%.1fs", time.monotonic() - started)
         write_stats(paths["summary"], payload)
@@ -1198,6 +1200,13 @@ def main(args: SequenceCollection[str] | None = None) -> None:
         raise SystemExit(2) from None
     except (ChunkCorrupted, ResourceError, BrokenProcessPool, OSError) as error:
         logger.exception("compute_clans failed; outputs must not be consumed")
+        # A failed run, unlike a rejected input, must not leave a previous summary vouching
+        # for it, and its traceback must outlive scratch.
+        with contextlib.suppress(OSError):
+            options.output_dir.mkdir(parents=True, exist_ok=True)
+            paths["summary"].unlink(missing_ok=True)
+            if not log_moved:
+                move_log(logger, scratch / "clans.log", paths["log"])
         print(f"mgnifam compute_clans: {error}", file=sys.stderr)
         raise SystemExit(1) from None
     finally:

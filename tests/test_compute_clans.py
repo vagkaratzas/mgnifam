@@ -512,6 +512,22 @@ def test_failure_while_writing_leaves_no_summary(
     assert not (root / "t_clans_summary.json").exists()
 
 
+def test_failure_before_writing_removes_the_summary_and_keeps_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    members = write_members(tmp_path / "m.tsv", [("A", "P/1-10"), ("B", "P/1-10")])
+    _, root = run(tmp_path, [members])
+    assert (root / "t_clans_summary.json").exists()
+
+    def fail(*_: object) -> None:
+        raise cc.ResourceError("over budget")
+
+    monkeypatch.setattr(cc, "plan_units", fail)
+    assert run(tmp_path, [members])[0] == 1
+    assert not (root / "t_clans_summary.json").exists()
+    assert "ResourceError: over budget" in (root / "t_clans.log").read_text()
+
+
 def test_a_full_scratch_disk_fails_before_the_pair_phase(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
