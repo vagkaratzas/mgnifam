@@ -13,6 +13,29 @@ dependency versions pinned in `uv.lock` (`uv sync --frozen`). Installing from Py
 pyhmmer, pyfamsa and pytrimal within their declared ranges instead, and a different
 resolution may change results.
 
+## [4.1.0] - 2026/11/05
+
+### Added
+
+- **`mgnifam compute_clans`**: family similarity and clans from the residue-level overlap
+  of family members, for any release, including one refreshed with
+  `update_families --skip_refine`. It reads `<chunk>_families.tsv`-style member files (plain
+  or gzip) and needs the database FASTA only when some member is a whole protein. For every
+  pair of families sharing a protein it reports, exactly, shared proteins, protein Jaccard,
+  residue Jaccard and residue containment. Clans are connected components at
+  `residue_jaccard >= 0.5`. Because it measures residues rather than proteins, families on
+  different domains of the same proteins stay apart. It needs no HMM search and no
+  representative, and whole-protein members take part like any other.
+  - Outputs: `<chunk>_clan_edges.csv`, `<chunk>_clans.csv`, `<chunk>_clans_summary.json` and
+    `<chunk>_clans.log`. A summary file means the run completed. A rejected input (exit `2`)
+    leaves the output directory unchanged.
+  - Flags: `--min_edge_jaccard` (default `0.1`), `--min_edge_containment` (`0.5`),
+    `--clan_jaccard` (`0.5`), `--cpus`, `--worker_memory_mb` (`512`) and `--tmp_dir`.
+  - Memory is 12 bytes per family pair plus the per-worker budget, and scratch disk about
+    30 bytes per member row plus the pair array, so inputs of billions of member rows fit on
+    one machine. Results are byte-identical across `--cpus`, `--worker_memory_mb`, input
+    order and `PYTHONHASHSEED`.
+
 ## [4.0.0] - 2026/09/28
 
 A major version because two outputs change shape: the metadata CSV's columns are renamed
