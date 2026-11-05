@@ -64,6 +64,8 @@ exclude = [
     "/PLAN.md",
     "/PLAN-REVIEW-LOG.md",
     "/.github",
+    "/.serena",
+    "/.claude",
 ]
 
 [dependency-groups]
