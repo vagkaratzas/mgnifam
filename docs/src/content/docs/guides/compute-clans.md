@@ -58,7 +58,7 @@ containment of 1.
 ## Clans
 
 A clan is a connected component of the graph whose edges are the pairs with
-`residue_jaccard >= --clan_jaccard` (default `0.5`, the release 1.0 threshold). Only
+`residue_jaccard >= --clan_jaccard` (default `0.5`). Only
 components of two or more families are written. The representative is the family with the
 largest sum of `residue_jaccard` over its clan edges, and ties go to the earlier name.
 Clans are numbered by size, largest first, then by representative name. Clan ids are
@@ -106,8 +106,9 @@ commands does not pick it up.
 ## Scale
 
 The work is the number of family pairs on each protein, Σ k(k−1)/2, plus the number of
-overlapping region pairs. It is not the number of family pairs. MGnifams release 1.1 has
-2.37 billion member rows and about 60 billion family pairs over its proteins.
+overlapping region pairs. It is not the number of family pairs. The figures below use an
+example input of 2.37 billion member rows in 34,419 families, with about 60 billion family
+pairs over its proteins.
 
 - **Memory** is one dense array of per-pair sums, 12 bytes per family pair (about 6 MB at
   1,000 families, 7.1 GB at 34,419), plus `--worker_memory_mb` per worker. The array is a
@@ -115,12 +116,12 @@ overlapping region pairs. It is not the number of family pairs. MGnifams release
   `/dev/shm`.
 - **Scratch disk** is 28 bytes per member row, plus the pair array, plus 24 bytes per FASTA
   record when whole-protein members exist, plus about 10% headroom. That comes to about
-  81 GB for release 1.1. Point `--tmp_dir` at a disk with that much room. The pair array
+  81 GB for the example input. Point `--tmp_dir` at a disk with that much room. The pair array
   is reserved before the pair phase, so a disk without room for it fails at once (exit
   `1`). The run creates its own directory inside it and removes only that directory,
   whether it succeeds or fails.
 - **Time**: on one core, parsing runs at about 0.5 million rows a second and the pair phase
-  at about 13 million pair emissions a second. Release 1.1 extrapolates to about four
+  at about 13 million pair emissions a second. The example input extrapolates to about four
   CPU-hours.
 
 No protein is skipped, however many families it carries. The one input the budget cannot
@@ -134,14 +135,14 @@ and asks for a larger budget.
 - Proteins are grouped by a 128-bit hash of their names. A collision would merge two
   proteins, which is negligible (about 10⁻²² at 10⁸ proteins).
 
-## Compared with release 1.0 clans
+## Compared with HMM-hit clans
 
-Release 1.0 built clans from `hmmsearch` hits of each family model against the other
-families' representatives, using a Jaccard over member *proteins*. This command differs in
-four ways:
+A common way to build clans searches each family's model against the other families'
+representatives with `hmmsearch` and scores the hits with a Jaccard over member
+*proteins*. This command differs in four ways:
 
-- It measures regions, not whole proteins, so neighbouring domains no longer join a clan.
-- It scores every pair that shares a protein. In 1.0 a pair was scored only if one family's
-  model hit the other's representative.
-- It writes each pair once. 1.0 wrote a pair once per domain hit.
-- Whole-protein representatives take part. In 1.0 they were never matched.
+- It measures regions, not whole proteins, so neighbouring domains do not join a clan.
+- It scores every pair that shares a protein, not only pairs where one family's model hits
+  the other's representative.
+- It writes each pair once, not once per domain hit.
+- Whole-protein members take part, over their full length from the FASTA.
