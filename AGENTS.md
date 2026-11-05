@@ -334,6 +334,9 @@ small helpers (`write_stats`, `configure_logger`, the name patterns), which it i
   SIGBUS instead of raising. Guard: `test_a_full_scratch_disk_fails_before_the_pair_phase`.
 - **Run keys are searched with `bisect`, not `np.searchsorted`.** `run["h1"]` is a strided
   view of a memmap, which `searchsorted` copies whole on every call.
+- **Runs are mapped per lookup, never cached.** Each `np.memmap` holds a file descriptor,
+  and runs number in the thousands at release scale, past a common `ulimit -n` of 1024 in
+  every worker. Guard: `test_runs_are_not_all_held_open`.
 - Workers are started with `forkserver`, so a monkeypatched module constant does not reach
   them. Tests change work sizes through `sizes_for`, which the parent computes and passes
   down, or run with `-p 1`.

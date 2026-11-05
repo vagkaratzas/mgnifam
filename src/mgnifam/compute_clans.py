@@ -453,7 +453,6 @@ _UNIT: dict[str, Any] = {}
 def init_unit_worker(state: UnitState) -> None:
     _UNIT.clear()
     _UNIT["state"] = state
-    _UNIT["maps"] = {}
     _UNIT["remap"] = np.memmap(state.remap_path, dtype="<u4", mode="r") if state.families else None
     pairs = state.families * (state.families - 1) // 2
     if state.shared_path and pairs:
@@ -463,10 +462,10 @@ def init_unit_worker(state: UnitState) -> None:
 
 
 def mapped(path: str, dtype: np.dtype) -> np.ndarray:
-    maps = _UNIT["maps"]
-    if path not in maps:
-        maps[path] = np.memmap(path, dtype=dtype, mode="r")
-    return maps[path]
+    """Map a run for one lookup. Not cached: every map holds a file descriptor, and a cache
+    of every run in every process can pass `ulimit -n` (~40 us a reopen, one fd at a time).
+    """
+    return np.memmap(path, dtype=dtype, mode="r")
 
 
 def key_range(keys: np.ndarray, low: int, high: int) -> tuple[int, int]:
@@ -652,20 +651,14 @@ def plan_units(
     by hash range, counted with `searchsorted` on the runs, down to a single hash value.
     """
     shift = 64 - BUCKET_BITS
-    maps: dict[str, np.ndarray] = {}
-
-    def keys(path: str, dtype: np.dtype) -> np.ndarray:
-        if path not in maps:
-            maps[path] = np.memmap(path, dtype=dtype, mode="r")["h1"]
-        return maps[path]
 
     def cost(low: int, high: int) -> int:
         total = 0
         for path, _, _ in member_runs:
-            first, last = key_range(keys(path, RECORD), low, high)
+            first, last = key_range(mapped(path, RECORD)["h1"], low, high)
             total += (last - first) * MEMBER_ROW_COST
         for path, _ in length_runs:
-            first, last = key_range(keys(path, LENGTH_RECORD), low, high)
+            first, last = key_range(mapped(path, LENGTH_RECORD)["h1"], low, high)
             total += (last - first) * LENGTH_ROW_COST
         return total
 
@@ -707,7 +700,6 @@ def plan_units(
         open_cost += weight
     if open_low is not None:
         units.append((open_low, 2**64))
-    maps.clear()
     return units
 
 

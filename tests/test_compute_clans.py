@@ -545,6 +545,21 @@ def test_a_full_scratch_disk_fails_before_the_pair_phase(
     assert run(tmp_path, [members])[0] == 1
 
 
+def test_runs_are_not_all_held_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 400 one-row runs under a 128-descriptor limit: caching a map per run would hit EMFILE.
+    resource = pytest.importorskip("resource")
+    tiny_sizes(monkeypatch, run_rows=1)
+    rows = [(f"F{n % 7}", f"P{n % 40}/1-{20 + n % 9}") for n in range(400)]
+    members = write_members(tmp_path / "m.tsv", rows)
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (128, hard))
+    try:
+        code, root = run(tmp_path, [members])
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+    assert code == 0 and edges(root)
+
+
 def test_a_killed_worker_fails_the_run_instead_of_hanging() -> None:
     with cc.worker_pool(2) as imap, pytest.raises(cc.BrokenProcessPool):
         list(imap(os._exit, [1]))
