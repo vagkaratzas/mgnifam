@@ -33,6 +33,7 @@ The work runs in three phases, all integer arithmetic, so outputs do not depend 
 """
 
 import argparse
+import array
 import bisect
 import contextlib
 import gzip
@@ -125,13 +126,16 @@ class Sizes(NamedTuple):
 MEMBER_ROW_COST = 192  # a loaded member row with its sorted copies and int64 promotions
 LENGTH_ROW_COST = 96
 EMISSION_COST = 96
+# A buffered member row (16 key bytes, three 8-byte values) plus the 28-byte record it
+# becomes at flush peaks near 68 bytes; the rest is allocator over-allocation and slack.
+RUN_ROW_COST = 96
 
 
 def sizes_for(worker_memory_mb: int) -> Sizes:
     budget = worker_memory_mb * 2**20
     return Sizes(
         range_bytes=max(2**16, budget // 4),
-        run_rows=max(1, budget // (4 * RECORD.itemsize)),
+        run_rows=max(1, budget // (2 * RUN_ROW_COST)),
         unit_cost=budget // 2,
         emission_batch=max(1, budget // (2 * EMISSION_COST)),
     )
@@ -183,12 +187,13 @@ class RunWriter:
     dtype: np.dtype
     run_rows: int
     keys: bytearray = field(default_factory=bytearray)
-    columns: dict[str, list[int]] = field(default_factory=dict)
+    # 8 bytes a value; a list of Python ints costs ~36.
+    columns: dict[str, array.array] = field(default_factory=dict)
     runs: list[tuple[str, int]] = field(default_factory=list)
     counts: np.ndarray = field(default_factory=lambda: np.zeros(2**BUCKET_BITS, np.int64))
 
     def __post_init__(self) -> None:
-        self.columns = {name: [] for name in self.dtype.names[2:]}  # type: ignore[index]
+        self.columns = {name: array.array("q") for name in self.dtype.names[2:]}  # type: ignore[index]
 
     def add(self, key: bytes, *values: int) -> None:
         self.keys += key
@@ -202,12 +207,14 @@ class RunWriter:
         if not rows:
             return
         records = np.empty(rows, self.dtype)
-        hashes = np.frombuffer(bytes(self.keys), dtype="<u8").reshape(rows, 2)
+        hashes = np.frombuffer(self.keys, dtype="<u8").reshape(rows, 2)
         records["h1"], records["h2"] = hashes[:, 0], hashes[:, 1]
+        del hashes  # release the buffer export so the bytearray can be cleared
+        self.keys.clear()
         for name, column in self.columns.items():
             records[name] = column
-            column.clear()
-        self.keys.clear()
+            del column[:]
+        # The buffers are freed before the sort, so its copies do not stack on them.
         records = records[np.argsort(records["h1"], kind="stable")]
         path = self.directory / f"{self.prefix}_{len(self.runs):05d}.bin"
         records.tofile(path)
