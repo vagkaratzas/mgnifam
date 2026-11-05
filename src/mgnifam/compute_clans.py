@@ -33,6 +33,7 @@ The work runs in three phases, all integer arithmetic, so outputs do not depend 
 """
 
 import argparse
+import bisect
 import contextlib
 import gzip
 import hashlib
@@ -462,9 +463,13 @@ def mapped(path: str, dtype: np.dtype) -> np.ndarray:
 
 
 def key_range(keys: np.ndarray, low: int, high: int) -> tuple[int, int]:
-    """Rows of a run sorted by `h1` whose `h1` lies in `[low, high)`; high may be 2^64."""
-    first = int(np.searchsorted(keys, np.uint64(low), side="left"))
-    last = len(keys) if high >= 2**64 else int(np.searchsorted(keys, np.uint64(high), "left"))
+    """Rows of a run sorted by `h1` whose `h1` lies in `[low, high)`; high may be 2^64.
+
+    `keys` is a strided field view of a memmapped run. `np.searchsorted` would copy the
+    whole column to a contiguous array on every call; `bisect` reads O(log n) elements.
+    """
+    first = bisect.bisect_left(keys, np.uint64(low))
+    last = len(keys) if high >= 2**64 else bisect.bisect_left(keys, np.uint64(high))
     return first, last
 
 
