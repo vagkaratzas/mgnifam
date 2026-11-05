@@ -286,14 +286,13 @@ class MembersResult(NamedTuple):
     counts: np.ndarray
     rows: int
     bare_rows: int
-    covered: int  # sum of end - start + 1 over slice rows
 
 
 def parse_members_task(task: Task, scratch: str, run_rows: int) -> MembersResult:
     """Parse one task's member rows into sorted runs. Families get task-local indices."""
     writer = RunWriter(Path(scratch) / "members", f"m{task.number:06d}", RECORD, run_rows)
     families: dict[bytes, int] = {}
-    rows = bare_rows = covered = 0
+    rows = bare_rows = 0
     for position, raw in task_lines(task):
         line = raw.rstrip(b"\r\n")
         family, tab, member = line.partition(b"\t")
@@ -319,14 +318,11 @@ def parse_members_task(task: Task, scratch: str, run_rows: int) -> MembersResult
                     f"1 <= start <= end <= {MAX_COORDINATE}"
                 )
             writer.add(protein_key(protein), index, start, end)
-            covered += end - start + 1
         rows += 1
     writer.flush()
     names_path = Path(scratch) / f"names_{task.number:06d}.txt"
     names_path.write_bytes(b"\n".join(families))
-    return MembersResult(
-        task.number, str(names_path), writer.runs, writer.counts, rows, bare_rows, covered
-    )
+    return MembersResult(task.number, str(names_path), writer.runs, writer.counts, rows, bare_rows)
 
 
 class LengthsResult(NamedTuple):
@@ -887,7 +883,6 @@ def find_missing_name(paths: Iterable[str], keys: set[tuple[int, int]]) -> str:
 class Totals:
     rows: int = 0
     bare_rows: int = 0
-    covered: int = 0
     member_runs: list[tuple[str, int, int]] = field(default_factory=list)
     member_counts: np.ndarray = field(default_factory=lambda: np.zeros(2**BUCKET_BITS, np.int64))
     length_runs: list[tuple[str, int]] = field(default_factory=list)
@@ -914,7 +909,6 @@ def run_phases(
     for result in results:
         totals.rows += result.rows
         totals.bare_rows += result.bare_rows
-        totals.covered += result.covered
         totals.member_counts += result.counts
         names.update(filter(None, Path(result.names_path).read_bytes().split(b"\n")))
     families = sorted(names)
@@ -964,12 +958,8 @@ def run_phases(
             time.monotonic() - started,
         )
 
-    # Every |R(F)| and I(A, B) is at most `covered`, every n(F) and S(A, B) at most `rows`;
-    # this one check bounds every accumulator and every threshold cross-product.
-    covered = totals.covered + totals.bare_rows * min(totals.max_length, MAX_COORDINATE)
-    for name, bound in (("covered residues", covered), ("member rows", totals.rows)):
-        if bound * 2 * THRESHOLD_SCALE >= INT64_LIMIT:
-            raise InputError(f"{name} ({bound}) exceed the supported bound for exact arithmetic")
+    # Every n(F) and S(A, B) is at most `rows`. Residues are bounded after Phase B, exactly.
+    check_exact_bound("member rows", totals.rows)
 
     count = len(families)
     pairs = count * (count - 1) // 2
@@ -1055,6 +1045,9 @@ def run_phases(
         max_k,
         time.monotonic() - started,
     )
+    # I(A, B) <= min |R|, so this bounds every residue sum and threshold cross-product. It
+    # runs before Phase C, so a rejection still leaves the output tree alone.
+    check_exact_bound("family residues", int(residues_per_family.max()) if count else 0)
     return {
         "families": [name.decode() for name in families],
         "proteins_per_family": proteins_per_family,
@@ -1070,6 +1063,12 @@ def run_phases(
             "max_families_per_protein": max_k,
         },
     }
+
+
+def check_exact_bound(name: str, bound: int) -> None:
+    """Reject a count whose threshold cross-products could overflow int64."""
+    if bound * 2 * THRESHOLD_SCALE >= INT64_LIMIT:
+        raise InputError(f"{name} ({bound}) exceed the supported bound for exact arithmetic")
 
 
 def exact_at_least(

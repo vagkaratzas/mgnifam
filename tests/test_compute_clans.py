@@ -462,6 +462,14 @@ def test_overflow_guard_is_explicit(tmp_path: Path, optimized: bool) -> None:
     assert not (tmp_path / "out").exists()
 
 
+def test_overflow_guard_bounds_each_family_not_the_whole_input(tmp_path: Path) -> None:
+    # 2,200 maximal regions again, but one per family: every |R(F)| is far below the bound.
+    rows = [(f"F{n}", f"P{n}/1-{2**31 - 1}") for n in range(2200)] + [("F0", f"P1/1-{2**31 - 1}")]
+    code, root = run(tmp_path, [write_members(tmp_path / "m.tsv", rows)])
+    assert code == 0
+    assert ("F0", "F1") in edges(root)
+
+
 def test_output_aliases_are_rejected(tmp_path: Path) -> None:
     members = write_members(tmp_path / "m.tsv", [("A", "P/1-10"), ("B", "P/1-10")])
     _, root = run(tmp_path, [members])

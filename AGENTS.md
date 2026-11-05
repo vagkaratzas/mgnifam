@@ -294,10 +294,12 @@ small helpers (`write_stats`, `configure_logger`, the name patterns), which it i
   `test_outputs_do_not_depend_on_execution_settings`,
   `test_outputs_do_not_depend_on_the_hash_seed`.
 - **Widen before subtracting.** Coordinates are stored uint32 and must be promoted to
-  int64 before `end + 1` or `min(e) - max(s) + 1`. The overflow bound on total covered
-  residues and rows is checked once, before Phase B, with `if ... raise`. Guards:
+  int64 before `end + 1` or `min(e) - max(s) + 1`. The overflow bound is checked with
+  `if ... raise` on member rows before Phase B, and on the largest family's `|R(F)|` after
+  it (still before Phase C). Never bound residues by an input-wide total: summed over
+  families, or with the FASTA's longest record, it rejects valid inputs. Guards:
   `test_largest_coordinate_is_accepted`, `test_overflow_guard_is_explicit` (also under
-  `python -O`).
+  `python -O`), `test_overflow_guard_bounds_each_family_not_the_whole_input`.
 - **Every pair is canonicalised to `a < b` before `pair_index`.** The overlap sweep runs in
   start order, not family order. Guard: `test_pair_orientation_does_not_follow_sweep_order`.
 - **The overlap sweep relies on merged intervals.** One family's merged intervals on a
