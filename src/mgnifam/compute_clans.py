@@ -671,6 +671,8 @@ def plan_units(
 
     def split(low: int, high: int) -> Iterator[tuple[int, int]]:
         total = cost(low, high)
+        if not total:
+            return  # an empty half would still cost every run a key lookup per unit
         if total <= target or (high - low == 1 and total <= unit_cost):
             yield low, high
         elif high - low == 1:
