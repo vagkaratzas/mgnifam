@@ -115,8 +115,10 @@ overlapping region pairs. It is not the number of family pairs. MGnifams release
   `/dev/shm`.
 - **Scratch disk** is 28 bytes per member row, plus the pair array, plus 24 bytes per FASTA
   record when whole-protein members exist, plus about 10% headroom. That comes to about
-  81 GB for release 1.1. Point `--tmp_dir` at a disk with that much room. The run creates its
-  own directory inside it and removes only that directory, whether it succeeds or fails.
+  81 GB for release 1.1. Point `--tmp_dir` at a disk with that much room. The pair array
+  is reserved before the pair phase, so a disk without room for it fails at once (exit
+  `1`). The run creates its own directory inside it and removes only that directory,
+  whether it succeeds or fails.
 - **Time**: on one core, parsing runs at about 0.5 million rows a second and the pair phase
   at about 13 million pair emissions a second. Release 1.1 extrapolates to about four
   CPU-hours.

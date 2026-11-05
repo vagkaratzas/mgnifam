@@ -325,6 +325,15 @@ small helpers (`write_stats`, `configure_logger`, the name patterns), which it i
 - **The summary is not the MultiQC stats file.** `<chunk>_clans_summary.json` deliberately
   has no `"tool"` key, so the external MultiQC module never parses it. Adding one is a
   coordinated change with that module.
+- **Pools are `ProcessPoolExecutor`, never `multiprocessing.Pool`.** A worker killed by a
+  signal (OOM, SIGBUS) loses its task in a `Pool` and the parent waits forever; the executor
+  raises `BrokenProcessPool`, which exits 1. Guard:
+  `test_a_killed_worker_fails_the_run_instead_of_hanging`.
+- **The pair triangle is reserved with `posix_fallocate` before Phase B.** A sparse file gets
+  its blocks only as workers write through the map, so a full disk would kill them with
+  SIGBUS instead of raising. Guard: `test_a_full_scratch_disk_fails_before_the_pair_phase`.
+- **Run keys are searched with `bisect`, not `np.searchsorted`.** `run["h1"]` is a strided
+  view of a memmap, which `searchsorted` copies whole on every call.
 - Workers are started with `forkserver`, so a monkeypatched module constant does not reach
   them. Tests change work sizes through `sizes_for`, which the parent computes and passes
   down, or run with `-p 1`.
