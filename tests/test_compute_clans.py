@@ -4,6 +4,7 @@ import random
 import subprocess
 import sys
 from collections import defaultdict, deque
+from concurrent.futures.process import BrokenProcessPool
 from fractions import Fraction
 from pathlib import Path
 
@@ -511,20 +512,21 @@ def test_failure_while_writing_leaves_no_summary(
     assert not (root / "t_clans_summary.json").exists()
 
 
+@pytest.mark.parametrize("error", [cc.ResourceError("over budget"), KeyError("a bug")])
 def test_failure_before_writing_removes_the_summary_and_keeps_the_log(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
 ) -> None:
     members = write_members(tmp_path / "m.tsv", [("A", "P/1-10"), ("B", "P/1-10")])
     _, root = run(tmp_path, [members])
     assert (root / "t_clans_summary.json").exists()
 
     def fail(*_: object) -> None:
-        raise cc.ResourceError("over budget")
+        raise error
 
     monkeypatch.setattr(cc, "plan_units", fail)
     assert run(tmp_path, [members])[0] == 1
     assert not (root / "t_clans_summary.json").exists()
-    assert "ResourceError: over budget" in (root / "t_clans.log").read_text()
+    assert f"{type(error).__name__}: {error}" in (root / "t_clans.log").read_text()
 
 
 def test_blank_lines_are_skipped(tmp_path: Path) -> None:
@@ -561,7 +563,7 @@ def test_runs_are_not_all_held_open(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 
 def test_a_killed_worker_fails_the_run_instead_of_hanging() -> None:
-    with cc.worker_pool(2) as imap, pytest.raises(cc.BrokenProcessPool):
+    with cc.worker_pool(2) as imap, pytest.raises(BrokenProcessPool):
         list(imap(os._exit, [1]))
 
 

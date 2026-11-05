@@ -50,7 +50,6 @@ from collections import Counter
 from collections.abc import Iterable, Iterator
 from collections.abc import Sequence as SequenceCollection
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
-from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -61,7 +60,6 @@ import numpy as np
 from mgnifam import __version__
 from mgnifam.generate_families import (
     CHUNK_PATTERN,
-    ChunkCorrupted,
     configure_logger,
     is_gzipped,
     write_stats,
@@ -1195,7 +1193,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
         logger.error("%s", error)
         print(f"mgnifam compute_clans: error: {error}", file=sys.stderr)
         raise SystemExit(2) from None
-    except (ChunkCorrupted, ResourceError, BrokenProcessPool, OSError) as error:
+    except Exception as error:  # every non-input failure takes the same exit-1 path
         logger.exception("compute_clans failed; outputs must not be consumed")
         # A failed run, unlike a rejected input, must not leave a previous summary vouching
         # for it, and its traceback must outlive scratch.
@@ -1204,7 +1202,7 @@ def main(args: SequenceCollection[str] | None = None) -> None:
             paths["summary"].unlink(missing_ok=True)
             if not log_moved:
                 move_log(logger, scratch / "clans.log", paths["log"])
-        print(f"mgnifam compute_clans: {error}", file=sys.stderr)
+        print(f"mgnifam compute_clans: {type(error).__name__}: {error}", file=sys.stderr)
         raise SystemExit(1) from None
     finally:
         for handler in logger.handlers:
