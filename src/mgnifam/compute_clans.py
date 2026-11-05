@@ -980,11 +980,20 @@ def run_phases(
         # Compared with what is still to be written, not the total: the runs already exist.
         free = shutil.disk_usage(scratch).free
         logger.info("triangle pairs=%d bytes=%d scratch_free=%d", pairs, triangle_bytes, free)
-        if free < triangle_bytes * 1.1:
-            logger.warning("scratch free space is below the triangle size plus 10 percent")
+        reserve = getattr(os, "posix_fallocate", None)
+        if reserve is None and free < triangle_bytes:
+            raise ResourceError(f"scratch: {free} bytes free, triangle needs {triangle_bytes}")
         shared_path, overlap_path = str(scratch / "shared.bin"), str(scratch / "overlap.bin")
         for path, dtype in ((shared_path, shared_dtype), (overlap_path, "<u8")):
-            np.memmap(path, dtype=dtype, mode="w+", shape=(pairs,)).flush()
+            size = pairs * np.dtype(dtype).itemsize
+            with open(path, "wb") as handle:
+                # A sparse file gets blocks only as workers write through the map, and a full
+                # disk then kills them with SIGBUS. Reserving fails here with ENOSPC instead.
+                if reserve:
+                    reserve(handle.fileno(), 0, size)
+                else:
+                    # shortcut: sparse where posix_fallocate is missing (macOS); checked above.
+                    handle.truncate(size)
 
     units = plan_units(
         totals.member_runs,

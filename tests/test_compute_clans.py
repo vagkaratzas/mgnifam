@@ -504,6 +504,17 @@ def test_failure_while_writing_leaves_no_summary(
     assert not (root / "t_clans_summary.json").exists()
 
 
+def test_a_full_scratch_disk_fails_before_the_pair_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def full(*_: object) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(cc.os, "posix_fallocate", full, raising=False)
+    members = write_members(tmp_path / "m.tsv", [("A", "P/1-10"), ("B", "P/1-10")])
+    assert run(tmp_path, [members])[0] == 1
+
+
 def test_a_killed_worker_fails_the_run_instead_of_hanging() -> None:
     with cc.worker_pool(2) as imap, pytest.raises(cc.BrokenProcessPool):
         list(imap(os._exit, [1]))
